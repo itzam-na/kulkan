@@ -60,6 +60,16 @@ impl PlaybackService {
         if !path.is_file() {
             return self.fail(format!("Audio file is not available: {}", path.display()));
         }
+        let extension = path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        if !matches!(extension.as_str(), "mp3" | "wav" | "flac" | "ogg" | "opus") {
+            return self.fail(format!(
+                "Unsupported audio format .{extension}; AAC/M4A is not supported in this version"
+            ));
+        }
         let uri = gst::glib::filename_to_uri(&path, None)
             .map_err(|error| format!("Could not open audio file: {error}"))?;
         let pipeline = gst::ElementFactory::make("playbin")

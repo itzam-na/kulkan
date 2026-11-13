@@ -1064,6 +1064,22 @@ fn a_malformed_audio_file_is_reported_and_does_not_destroy_its_last_known_entry(
 }
 
 #[test]
+fn deferred_aac_and_m4a_files_are_reported_as_unsupported_media() {
+    let directory = TestDirectory::new();
+    let root = directory.0.join("music");
+    fs::create_dir(&root).unwrap();
+    let unsupported = root.join("deferred.m4a");
+    fs::write(&unsupported, b"not decoded by the v1 player").unwrap();
+
+    let result = scan_library(&Catalog::default(), std::slice::from_ref(&root));
+
+    assert_eq!(result.media_errors.len(), 1);
+    assert_eq!(result.media_errors[0].path, unsupported);
+    assert!(result.media_errors[0].message.contains("AAC/M4A"));
+    assert!(result.catalog.entries.is_empty());
+}
+
+#[test]
 fn a_truncated_flac_frame_does_not_replace_the_last_known_entry() {
     let directory = TestDirectory::new();
     let root = directory.0.join("music");

@@ -25,7 +25,7 @@ The selected roots are only held for the current server session in this build. P
 
 The catalog displays original tag text when available: title, artist credit, release title, release year, track number, genre, duration, and canonical file location. Missing tags remain missing; Kulkán does not guess metadata from filenames or filesystem timestamps. The current build does not yet offer catalog search.
 
-Supported discovery formats are MP3, PCM WAV, FLAC, Ogg Vorbis, and Ogg Opus. AAC/M4A is not supported. A supported file that is malformed or cannot be read is reported as a media error rather than silently treated as a valid track.
+Supported discovery formats are MP3, PCM WAV, FLAC, Ogg Vorbis, and Ogg Opus. AAC/M4A is not supported and is reported in the scan status rather than silently ignored. A supported file that is malformed or cannot be read is reported as a media error rather than silently treated as a valid track.
 
 ## Play a track
 

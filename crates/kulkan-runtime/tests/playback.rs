@@ -105,6 +105,20 @@ fn unreadable_media_reports_an_actionable_playback_error() {
     server.shutdown().unwrap();
 }
 
+#[test]
+fn unsupported_aac_m4a_media_reports_an_actionable_playback_error() {
+    let directory = TestDirectory::new();
+    let track = directory.0.join("unsupported.m4a");
+    fs::write(&track, b"AAC/M4A is not supported in this version").unwrap();
+    let mut server = start_headless_server(&directory);
+
+    let error = server.play_track(&track).unwrap_err();
+
+    assert!(error.to_string().contains("AAC/M4A"));
+    assert!(error.to_string().contains("not supported"));
+    server.shutdown().unwrap();
+}
+
 fn start_headless_server(directory: &TestDirectory) -> ServerProcess {
     let socket = directory.0.join("server.sock");
     let executable = PathBuf::from(env!("CARGO_BIN_EXE_kulkan-server"));

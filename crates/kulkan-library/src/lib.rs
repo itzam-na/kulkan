@@ -426,13 +426,19 @@ fn previous_resolved_path(previous: &Catalog, selected_path: &Path) -> Option<Pa
 fn read_metadata(
     path: &Path,
 ) -> Result<(TrackMetadata, Option<Duration>, ContentFingerprint), String> {
-    let tagged_file = lofty::read_from_path(path)
-        .map_err(|error| format!("could not read audio metadata: {error}"))?;
     let extension = path
         .extension()
         .and_then(|extension| extension.to_str())
         .unwrap_or_default()
         .to_ascii_lowercase();
+    if matches!(extension.as_str(), "aac" | "m4a") {
+        return Err(format!(
+            "AAC/M4A audio is not supported in this version: {}",
+            path.display()
+        ));
+    }
+    let tagged_file = lofty::read_from_path(path)
+        .map_err(|error| format!("could not read audio metadata: {error}"))?;
     let tags = preferred_tags(&tagged_file, &extension);
     let metadata = metadata_from_tags(&tags, &extension);
     let duration = tagged_file.properties().duration();
@@ -1387,7 +1393,7 @@ fn enumerate_directory(
                 excluded_symlink_paths,
                 incomplete_paths,
             );
-        } else if file_type.is_file() && is_supported_audio(&path) {
+        } else if file_type.is_file() && is_audio_candidate(&path) {
             match fs::canonicalize(&path) {
                 Ok(resolved_path) if resolved_path.starts_with(root) => {
                     discovered.insert(resolved_path);
@@ -1412,6 +1418,16 @@ fn is_supported_audio(path: &Path) -> bool {
                 "mp3" | "wav" | "flac" | "ogg" | "opus"
             )
         })
+}
+
+fn is_audio_candidate(path: &Path) -> bool {
+    is_supported_audio(path)
+        || path
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| {
+                matches!(extension.to_ascii_lowercase().as_str(), "aac" | "m4a")
+            })
 }
 
 fn absolute_path(path: &Path) -> PathBuf {
