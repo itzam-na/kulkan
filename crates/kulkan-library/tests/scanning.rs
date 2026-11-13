@@ -546,6 +546,28 @@ fn a_corrupt_ogg_page_does_not_replace_the_last_known_entry() {
 }
 
 #[test]
+fn chained_ogg_streams_of_the_same_codec_are_fingerprinted_together() {
+    let directory = TestDirectory::new();
+    let root = directory.0.join("music");
+    fs::create_dir(&root).unwrap();
+    let track = root.join("chained.ogg");
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/metadata.ogg");
+    let first = fs::read(&fixture).unwrap();
+    let mut second = fs::read(fixture).unwrap();
+    let first_serial = u32::from_le_bytes(first[14..18].try_into().unwrap());
+    rewrite_ogg_serial(&mut second, first_serial.wrapping_add(1));
+    let mut chained = first;
+    chained.extend_from_slice(&second);
+    fs::write(&track, chained).unwrap();
+
+    let result = scan_library(&Catalog::default(), std::slice::from_ref(&root));
+
+    assert!(result.media_errors.is_empty(), "{:?}", result.media_errors);
+    assert_eq!(result.catalog.entries.len(), 1);
+    assert!(result.catalog.entries[0].active);
+}
+
+#[test]
 fn changed_audio_at_the_same_path_gets_new_identity_and_keeps_old_history_inactive() {
     let directory = TestDirectory::new();
     let root = directory.0.join("music");
@@ -866,6 +888,29 @@ fn an_apev2_tag_edit_does_not_change_mp3_identity() {
 }
 
 #[test]
+fn a_leading_id3_tag_does_not_change_flac_identity() {
+    let directory = TestDirectory::new();
+    let root = directory.0.join("music");
+    fs::create_dir(&root).unwrap();
+    let track = root.join("track.flac");
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/metadata.flac");
+    fs::copy(fixture, &track).unwrap();
+    let mut previous = scan_library(&Catalog::default(), std::slice::from_ref(&root)).catalog;
+    previous.entries[0].play_count = 7;
+    let original_id = previous.entries[0].id;
+
+    let mut bytes = b"ID3\x04\x00\x00\x00\x00\x00\x00".to_vec();
+    bytes.extend_from_slice(&fs::read(&track).unwrap());
+    fs::write(&track, bytes).unwrap();
+    let result = scan_library(&previous, std::slice::from_ref(&root));
+
+    assert!(result.media_errors.is_empty(), "{:?}", result.media_errors);
+    assert_eq!(result.catalog.entries.len(), 1);
+    assert_eq!(result.catalog.entries[0].id, original_id);
+    assert_eq!(result.catalog.entries[0].play_count, 7);
+}
+
+#[test]
 fn returning_entry_keeps_its_identity_when_an_earlier_sorted_copy_is_added() {
     let directory = TestDirectory::new();
     let root = directory.0.join("music");
@@ -1085,4 +1130,21 @@ fn refresh_ogg_checksums(bytes: &mut [u8]) {
         bytes[offset + 22..offset + 26].copy_from_slice(&crc.to_le_bytes());
         offset = page_end;
     }
+}
+
+fn rewrite_ogg_serial(bytes: &mut [u8], serial: u32) {
+    let mut offset = 0;
+    while offset < bytes.len() {
+        let segment_count = bytes[offset + 26] as usize;
+        let lacing_start = offset + 27;
+        let body_start = lacing_start + segment_count;
+        let body_size = bytes[lacing_start..body_start]
+            .iter()
+            .map(|size| usize::from(*size))
+            .sum::<usize>();
+        let page_end = body_start + body_size;
+        bytes[offset + 14..offset + 18].copy_from_slice(&serial.to_le_bytes());
+        offset = page_end;
+    }
+    refresh_ogg_checksums(bytes);
 }

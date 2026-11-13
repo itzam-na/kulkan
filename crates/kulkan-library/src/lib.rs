@@ -489,10 +489,15 @@ fn fingerprint_wav(bytes: &[u8], hash: &mut Sha256) -> Result<(), String> {
 }
 
 fn fingerprint_flac(bytes: &[u8], hash: &mut Sha256) -> Result<(), String> {
-    if bytes.get(..4) != Some(b"fLaC") {
+    let mut stream_start = 0;
+    while bytes.get(stream_start..stream_start + 3) == Some(b"ID3") {
+        stream_start = id3_tag_end(bytes, stream_start)
+            .ok_or_else(|| "invalid leading ID3 tag in FLAC file".to_owned())?;
+    }
+    if bytes.get(stream_start..stream_start + 4) != Some(b"fLaC") {
         return Err("not a FLAC stream".to_owned());
     }
-    let mut offset = 4;
+    let mut offset = stream_start + 4;
     let mut first = true;
     let mut stream_info = None;
     loop {
@@ -781,8 +786,9 @@ fn mp3_frame_length(frame: &[u8]) -> Option<usize> {
 fn fingerprint_ogg(bytes: &[u8], hash: &mut Sha256) -> Result<(), String> {
     let mut offset = 0;
     let mut serial = None;
+    let mut used_serials = HashSet::new();
     let mut expected_sequence = None;
-    let mut saw_eos = false;
+    let mut stream_ended = true;
     let mut packet_buffer = Vec::new();
     let mut packets = Vec::new();
     while offset < bytes.len() {
@@ -791,19 +797,32 @@ fn fingerprint_ogg(bytes: &[u8], hash: &mut Sha256) -> Result<(), String> {
             .filter(|header| &header[..4] == b"OggS" && header[4] == 0)
             .ok_or_else(|| "invalid or truncated Ogg page".to_owned())?;
         let page_serial = u32::from_le_bytes(header[14..18].try_into().unwrap());
-        if saw_eos {
-            return Err("Ogg stream contains pages after its end marker".to_owned());
+        let page_flags = header[5];
+        let begins_stream = page_flags & 0x02 != 0;
+        let ends_stream = page_flags & 0x04 != 0;
+        let continues_packet = page_flags & 0x01 != 0;
+        let starts_new_stream = serial.is_none() || stream_ended;
+        if starts_new_stream {
+            if !begins_stream || continues_packet || used_serials.contains(&page_serial) {
+                return Err("invalid Ogg logical-stream boundary".to_owned());
+            }
+            used_serials.insert(page_serial);
+            serial = Some(page_serial);
+            expected_sequence = Some(0);
+            packets.clear();
+            packet_buffer.clear();
+            stream_ended = false;
+        } else if serial != Some(page_serial) || begins_stream {
+            return Err("interleaved Ogg logical streams are not supported".to_owned());
         }
-        if serial.is_some_and(|serial| serial != page_serial) {
-            return Err("multiple Ogg logical streams are not supported".to_owned());
-        }
-        serial = Some(page_serial);
         let sequence = u32::from_le_bytes(header[18..22].try_into().unwrap());
         if expected_sequence.is_some_and(|expected| sequence != expected) {
             return Err("Ogg page sequence is incomplete".to_owned());
         }
         expected_sequence = Some(sequence.wrapping_add(1));
-        saw_eos = header[5] & 0x04 != 0;
+        if continues_packet != !packet_buffer.is_empty() {
+            return Err("invalid Ogg packet-continuation flag".to_owned());
+        }
         let segment_count = header[26] as usize;
         let lacing = bytes
             .get(offset + 27..offset + 27 + segment_count)
@@ -825,22 +844,32 @@ fn fingerprint_ogg(bytes: &[u8], hash: &mut Sha256) -> Result<(), String> {
         if ogg_page_crc(&bytes[offset..body_offset]) != expected_crc {
             return Err("Ogg page checksum does not match".to_owned());
         }
+        if ends_stream {
+            if !packet_buffer.is_empty() {
+                return Err("Ogg stream ends in the middle of a packet".to_owned());
+            }
+            hash_ogg_packets(&packets, hash)?;
+            stream_ended = true;
+        }
         offset = body_offset;
     }
-    if !saw_eos {
+    if serial.is_none() || !stream_ended {
         return Err("Ogg stream has no end marker".to_owned());
     }
-    if !packet_buffer.is_empty() {
-        return Err("Ogg stream ends with an incomplete packet".to_owned());
-    }
+
+    Ok(())
+}
+
+fn hash_ogg_packets(packets: &[Vec<u8>], hash: &mut Sha256) -> Result<(), String> {
     let Some(first) = packets.first() else {
         return Err("Ogg stream has no packets".to_owned());
     };
+    hash.update(b"Ogg logical stream\0");
     if first.get(..7) == Some(&b"\x01vorbis"[..]) {
         if packets.len() < 4 || packets[1].first() != Some(&3) || packets[2].first() != Some(&5) {
             return Err("incomplete Ogg Vorbis headers".to_owned());
         }
-        hash.update(b"Ogg/Vorbis\0");
+        hash.update(b"Vorbis\0");
         hash_packet(hash, &packets[0]);
         hash_packet(hash, &packets[2]);
         for packet in &packets[3..] {
@@ -854,7 +883,7 @@ fn fingerprint_ogg(bytes: &[u8], hash: &mut Sha256) -> Result<(), String> {
         if head.len() < 19 {
             return Err("invalid OpusHead packet".to_owned());
         }
-        hash.update(b"Ogg/Opus\0");
+        hash.update(b"Opus\0");
         hash_packet(hash, head);
         for packet in &packets[2..] {
             hash_packet(hash, packet);
