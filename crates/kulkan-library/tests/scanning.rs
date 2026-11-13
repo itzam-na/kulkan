@@ -231,6 +231,36 @@ fn supported_formats_keep_original_tags_and_do_not_promote_recording_dates_to_re
 }
 
 #[test]
+fn a_decodable_flac_without_declared_duration_gets_a_cached_duration() {
+    let directory = TestDirectory::new();
+    let root = directory.0.join("music");
+    fs::create_dir(&root).unwrap();
+    let track = root.join("unknown-duration.flac");
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/metadata.flac");
+    fs::copy(fixture, &track).unwrap();
+    let mut bytes = fs::read(&track).unwrap();
+    let packed = u64::from_be_bytes(bytes[18..26].try_into().unwrap());
+    let sample_count_mask = (1_u64 << 36) - 1;
+    bytes[18..26].copy_from_slice(&(packed & !sample_count_mask).to_be_bytes());
+    fs::write(&track, bytes).unwrap();
+
+    let first_scan = scan_library(&Catalog::default(), std::slice::from_ref(&root));
+
+    assert!(
+        first_scan.media_errors.is_empty(),
+        "{:?}",
+        first_scan.media_errors
+    );
+    let duration = first_scan.catalog.entries[0]
+        .duration
+        .expect("GStreamer derives duration from the decodable frames");
+    assert!(duration > std::time::Duration::ZERO);
+
+    let second_scan = scan_library(&first_scan.catalog, std::slice::from_ref(&root));
+    assert_eq!(second_scan.catalog.entries[0].duration, Some(duration));
+}
+
+#[test]
 fn only_valid_explicit_release_dates_supply_a_release_year() {
     let directory = TestDirectory::new();
     let root = directory.0.join("music");

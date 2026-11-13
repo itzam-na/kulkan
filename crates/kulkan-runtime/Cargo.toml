@@ -6,6 +6,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+gstreamer = "0.24.4"
 kulkan-ipc = { path = "../kulkan-ipc" }
 kulkan-library = { path = "../kulkan-library" }
 

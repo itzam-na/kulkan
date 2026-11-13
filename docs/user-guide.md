@@ -1,6 +1,6 @@
 # Kulkán user guide
 
-This guide describes the library workflow currently implemented in the local development build. Playback, criteria-based search, queue controls, history, and state export/import are not available yet; their requirements remain in [`SPEC.md`](../SPEC.md) and Codeberg issues.
+This guide describes the library and single-track playback workflow currently implemented in the local development build. Criteria-based search, queue controls, history, and state export/import are not available yet; their requirements remain in [`SPEC.md`](../SPEC.md) and Codeberg issues.
 
 ## Install and launch
 
@@ -23,9 +23,15 @@ The selected roots are only held for the current server session in this build. P
 
 ## Browse the catalog
 
-The catalog displays original tag text when available: title, artist credit, release title, release year, track number, genre, duration, and canonical file location. Missing tags remain missing; Kulkán does not guess metadata from filenames or filesystem timestamps. The current build does not yet offer catalog search or playback.
+The catalog displays original tag text when available: title, artist credit, release title, release year, track number, genre, duration, and canonical file location. Missing tags remain missing; Kulkán does not guess metadata from filenames or filesystem timestamps. The current build does not yet offer catalog search.
 
 Supported discovery formats are MP3, PCM WAV, FLAC, Ogg Vorbis, and Ogg Opus. AAC/M4A is not supported. A supported file that is malformed or cannot be read is reported as a media error rather than silently treated as a valid track.
+
+## Play a track
+
+Select an active catalog row and choose **Play Selected**. Use **Pause** and **Resume** to control playback, drag the position slider and choose **Seek** to move within the track, or choose **Stop** to end playback. The current artist, title, elapsed time, and duration appear below the catalog. Playback uses the GStreamer plugins packaged with Kulkán and works offline; it does not download decoders or depend on host-installed codec plugins.
+
+When media metadata does not provide a duration, Kulkán uses GStreamer to discover or derive one and stores it in the catalog. If a file cannot be decoded or its duration cannot be established, the status line reports a playback/discovery error. Playback errors include the GStreamer diagnostic where available.
 
 ## Rescans and missing files
 

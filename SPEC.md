@@ -200,3 +200,4 @@ The spec defines behavior, not a database schema, storage engine, IPC message sc
 - [Issue #15 — first-release acceptance criteria](https://codeberg.org/padi/izmusica/issues/15)
 - [Issue #16 — duration derivation and filtering](https://codeberg.org/padi/izmusica/issues/16)
 - [Issue #17 — genre metadata mapping](https://codeberg.org/padi/izmusica/issues/17)
+- [Issue #21 — supported-format playback](https://codeberg.org/padi/izmusica/issues/21)

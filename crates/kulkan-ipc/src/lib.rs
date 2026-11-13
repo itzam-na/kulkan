@@ -33,6 +33,34 @@ pub enum Message {
     CatalogPage(CatalogPage),
     ScanSummary(ScanSummary),
     LibraryOperationFailed(String),
+    PlayTrack(PathBuf),
+    PausePlayback,
+    ResumePlayback,
+    SeekPlayback(u64),
+    StopPlayback,
+    GetPlaybackState,
+    PlaybackState(PlaybackSnapshot),
+    PlaybackOperationFailed(String),
+}
+
+/// Current transport state reported by the child server's GStreamer pipeline.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct PlaybackSnapshot {
+    pub track: Option<PathBuf>,
+    pub status: PlaybackStatus,
+    pub position_ms: u64,
+    pub duration_ms: Option<u64>,
+    pub error: Option<String>,
+}
+
+/// A listener-visible state of the active playback attempt.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum PlaybackStatus {
+    Stopped,
+    Playing,
+    Paused,
+    Ended,
+    Failed,
 }
 
 #[derive(Debug, Deserialize, Serialize)]

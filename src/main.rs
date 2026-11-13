@@ -1,6 +1,8 @@
 use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::Duration;
@@ -9,7 +11,10 @@ use gtk::gio;
 use gtk::glib;
 use gtk::prelude::*;
 use kulkan_library::{CatalogPage, LibraryEntry, LibraryState, ScanSummary, present_catalog_entry};
-use kulkan_runtime::{ClientInstance, ServerClient, ServerProcess, activate_existing_client};
+use kulkan_runtime::{
+    ClientInstance, PlaybackSnapshot, PlaybackStatus, ServerClient, ServerProcess,
+    activate_existing_client,
+};
 
 const APPLICATION_ID: &str = "org.kulkan.Kulkan";
 
@@ -196,6 +201,37 @@ fn build_main_window(application: &gtk::Application, server_state: Rc<RefCell<Se
     load_more.set_visible(false);
     main_content.append(&load_more);
 
+    let current_track = gtk::Label::new(Some("Nothing is playing."));
+    current_track.set_halign(gtk::Align::Start);
+    current_track.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    main_content.append(&current_track);
+    let playback_position = gtk::Scale::with_range(gtk::Orientation::Horizontal, 0.0, 1.0, 1.0);
+    playback_position.set_hexpand(true);
+    playback_position.set_draw_value(false);
+    playback_position.set_sensitive(false);
+    main_content.append(&playback_position);
+    let playback_controls = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    let play_selected = gtk::Button::with_label("Play Selected");
+    let pause_playback = gtk::Button::with_label("Pause");
+    let resume_playback = gtk::Button::with_label("Resume");
+    let seek_playback = gtk::Button::with_label("Seek");
+    let stop_playback = gtk::Button::with_label("Stop");
+    play_selected.set_sensitive(false);
+    pause_playback.set_sensitive(false);
+    resume_playback.set_sensitive(false);
+    seek_playback.set_sensitive(false);
+    stop_playback.set_sensitive(false);
+    for button in [
+        &play_selected,
+        &pause_playback,
+        &resume_playback,
+        &seek_playback,
+        &stop_playback,
+    ] {
+        playback_controls.append(button);
+    }
+    main_content.append(&playback_controls);
+
     let queue_placeholder = gtk::Box::new(gtk::Orientation::Vertical, 8);
     queue_placeholder.set_size_request(220, -1);
     let queue_title = gtk::Label::new(Some("Queue"));
@@ -223,6 +259,8 @@ fn build_main_window(application: &gtk::Application, server_state: Rc<RefCell<Se
     window.set_child(Some(&shell));
 
     let roots_model = Rc::new(RefCell::new(Vec::<PathBuf>::new()));
+    let catalog_entries = Rc::new(RefCell::new(Vec::<LibraryEntry>::new()));
+    let poll_playback = Arc::new(AtomicBool::new(false));
     let (sender, receiver) = mpsc::channel();
     let catalog_paging = Rc::new(RefCell::new(None::<(ServerClient, usize)>));
     install_library_events(
@@ -231,11 +269,110 @@ fn build_main_window(application: &gtk::Application, server_state: Rc<RefCell<Se
             roots_list: roots_list.clone(),
             catalog_list: catalog_list.clone(),
             roots_model: Rc::clone(&roots_model),
+            catalog_entries: Rc::clone(&catalog_entries),
             catalog_paging: Rc::clone(&catalog_paging),
             status: status.clone(),
             scan_button: scan_button.clone(),
             load_more: load_more.clone(),
+            playback: PlaybackUi {
+                current_track: current_track.clone(),
+                position: playback_position.clone(),
+                play_selected: play_selected.clone(),
+                pause: pause_playback.clone(),
+                resume: resume_playback.clone(),
+                seek: seek_playback.clone(),
+                stop: stop_playback.clone(),
+            },
+            poll_playback: Arc::clone(&poll_playback),
         },
+    );
+    let selection_model = Rc::clone(&catalog_entries);
+    let play_for_selection = play_selected.clone();
+    let selection_server = Rc::clone(&server_state);
+    catalog_list.connect_row_selected(move |_, row| {
+        let can_play = row
+            .and_then(|row| selection_model.borrow().get(row.index() as usize).cloned())
+            .is_some_and(|entry| entry.active && selection_server.borrow().client().is_some());
+        play_for_selection.set_sensitive(can_play);
+    });
+
+    let play_state = Rc::clone(&server_state);
+    let play_model = Rc::clone(&catalog_entries);
+    let play_list = catalog_list.clone();
+    let play_status = status.clone();
+    let play_sender = sender.clone();
+    play_selected.connect_clicked(move |_| {
+        let Some(row) = play_list.selected_row() else {
+            return;
+        };
+        let Some(entry) = play_model.borrow().get(row.index() as usize).cloned() else {
+            return;
+        };
+        let Some(client) = play_state.borrow().client() else {
+            play_status.set_text("Server unavailable. Select Retry.");
+            return;
+        };
+        play_status.set_text("Starting playback…");
+        send_playback_operation(
+            client,
+            PlaybackRequest::Play(entry.path),
+            play_sender.clone(),
+        );
+    });
+
+    let pause_state = Rc::clone(&server_state);
+    let pause_status = status.clone();
+    let pause_sender = sender.clone();
+    pause_playback.connect_clicked(move |_| {
+        if let Some(client) = pause_state.borrow().client() {
+            send_playback_operation(client, PlaybackRequest::Pause, pause_sender.clone());
+        } else {
+            pause_status.set_text("Server unavailable. Select Retry.");
+        }
+    });
+
+    let resume_state = Rc::clone(&server_state);
+    let resume_status = status.clone();
+    let resume_sender = sender.clone();
+    resume_playback.connect_clicked(move |_| {
+        if let Some(client) = resume_state.borrow().client() {
+            send_playback_operation(client, PlaybackRequest::Resume, resume_sender.clone());
+        } else {
+            resume_status.set_text("Server unavailable. Select Retry.");
+        }
+    });
+
+    let seek_state = Rc::clone(&server_state);
+    let seek_scale = playback_position.clone();
+    let seek_status = status.clone();
+    let seek_sender = sender.clone();
+    seek_playback.connect_clicked(move |_| {
+        if let Some(client) = seek_state.borrow().client() {
+            send_playback_operation(
+                client,
+                PlaybackRequest::Seek(seek_scale.value().max(0.0) as u64),
+                seek_sender.clone(),
+            );
+        } else {
+            seek_status.set_text("Server unavailable. Select Retry.");
+        }
+    });
+
+    let stop_state = Rc::clone(&server_state);
+    let stop_status = status.clone();
+    let stop_sender = sender.clone();
+    stop_playback.connect_clicked(move |_| {
+        if let Some(client) = stop_state.borrow().client() {
+            send_playback_operation(client, PlaybackRequest::Stop, stop_sender.clone());
+        } else {
+            stop_status.set_text("Server unavailable. Select Retry.");
+        }
+    });
+
+    install_playback_poll(
+        Rc::clone(&server_state),
+        sender.clone(),
+        Arc::clone(&poll_playback),
     );
     let remove_for_selection = remove_root.clone();
     let selection_state = Rc::clone(&server_state);
@@ -414,16 +551,39 @@ enum UiEvent {
     Roots(Result<LibraryState, String>),
     Catalog(Result<(ScanSummary, CatalogPage, ServerClient), String>),
     CatalogPage(Result<CatalogPage, String>),
+    Playback(Result<PlaybackSnapshot, String>),
+}
+
+enum PlaybackRequest {
+    Play(PathBuf),
+    Pause,
+    Resume,
+    Seek(u64),
+    Stop,
+    State,
 }
 
 struct LibraryUi {
     roots_list: gtk::ListBox,
     catalog_list: gtk::ListBox,
     roots_model: Rc<RefCell<Vec<PathBuf>>>,
+    catalog_entries: Rc<RefCell<Vec<LibraryEntry>>>,
     catalog_paging: Rc<RefCell<Option<(ServerClient, usize)>>>,
     status: gtk::Label,
     scan_button: gtk::Button,
     load_more: gtk::Button,
+    playback: PlaybackUi,
+    poll_playback: Arc<AtomicBool>,
+}
+
+struct PlaybackUi {
+    current_track: gtk::Label,
+    position: gtk::Scale,
+    play_selected: gtk::Button,
+    pause: gtk::Button,
+    resume: gtk::Button,
+    seek: gtk::Button,
+    stop: gtk::Button,
 }
 
 fn install_library_events(receiver: Receiver<UiEvent>, ui: LibraryUi) {
@@ -431,10 +591,13 @@ fn install_library_events(receiver: Receiver<UiEvent>, ui: LibraryUi) {
         roots_list,
         catalog_list,
         roots_model,
+        catalog_entries,
         catalog_paging,
         status,
         scan_button,
         load_more,
+        playback,
+        poll_playback,
     } = ui;
     glib::timeout_add_local(Duration::from_millis(40), move || {
         while let Ok(event) = receiver.try_recv() {
@@ -449,7 +612,7 @@ fn install_library_events(receiver: Receiver<UiEvent>, ui: LibraryUi) {
                     status.set_text(&format!("Library operation failed: {error}"));
                 }
                 UiEvent::Catalog(Ok((summary, page, client))) => {
-                    replace_catalog_rows(&catalog_list, &page.entries);
+                    replace_catalog_rows(&catalog_list, &page.entries, &catalog_entries);
                     scan_button.set_sensitive(true);
                     status.set_text(&scan_status_text(&summary));
                     *catalog_paging.borrow_mut() = page.next_offset.map(|offset| (client, offset));
@@ -461,7 +624,7 @@ fn install_library_events(receiver: Receiver<UiEvent>, ui: LibraryUi) {
                     status.set_text(&format!("Library scan failed: {error}"));
                 }
                 UiEvent::CatalogPage(Ok(page)) => {
-                    append_catalog_rows(&catalog_list, &page.entries);
+                    append_catalog_rows(&catalog_list, &page.entries, &catalog_entries);
                     let client = catalog_paging
                         .borrow()
                         .as_ref()
@@ -475,10 +638,179 @@ fn install_library_events(receiver: Receiver<UiEvent>, ui: LibraryUi) {
                     load_more.set_sensitive(true);
                     status.set_text(&format!("Could not load more tracks: {error}"));
                 }
+                UiEvent::Playback(Ok(snapshot)) => {
+                    playback.apply(&snapshot, &catalog_entries.borrow(), &status);
+                    poll_playback.store(
+                        matches!(
+                            snapshot.status,
+                            PlaybackStatus::Playing | PlaybackStatus::Paused
+                        ),
+                        Ordering::Relaxed,
+                    );
+                    playback.play_selected.set_sensitive(
+                        catalog_list
+                            .selected_row()
+                            .and_then(|row| {
+                                catalog_entries.borrow().get(row.index() as usize).cloned()
+                            })
+                            .is_some_and(|entry| entry.active),
+                    );
+                }
+                UiEvent::Playback(Err(error)) => {
+                    poll_playback.store(false, Ordering::Relaxed);
+                    status.set_text(&format!("Playback failed: {error}"));
+                    playback.current_track.set_text("Playback error");
+                    playback.pause.set_sensitive(false);
+                    playback.resume.set_sensitive(false);
+                    playback.seek.set_sensitive(false);
+                    playback.stop.set_sensitive(false);
+                }
             }
         }
         glib::ControlFlow::Continue
     });
+}
+
+fn send_playback_operation(
+    client: ServerClient,
+    request: PlaybackRequest,
+    sender: Sender<UiEvent>,
+) {
+    thread::spawn(move || {
+        let result = perform_playback_request(&client, request).map_err(|error| error.to_string());
+        let _ = sender.send(UiEvent::Playback(result));
+    });
+}
+
+fn perform_playback_request(
+    client: &ServerClient,
+    request: PlaybackRequest,
+) -> std::io::Result<PlaybackSnapshot> {
+    match request {
+        PlaybackRequest::Play(path) => client.play_track(&path),
+        PlaybackRequest::Pause => client.pause_playback(),
+        PlaybackRequest::Resume => client.resume_playback(),
+        PlaybackRequest::Seek(position_ms) => client.seek_playback(position_ms),
+        PlaybackRequest::Stop => client.stop_playback(),
+        PlaybackRequest::State => client.playback_state(),
+    }
+}
+
+fn install_playback_poll(
+    server_state: Rc<RefCell<ServerState>>,
+    sender: Sender<UiEvent>,
+    enabled: Arc<AtomicBool>,
+) {
+    let busy = Arc::new(AtomicBool::new(false));
+    glib::timeout_add_local(Duration::from_millis(250), move || {
+        if !enabled.load(Ordering::Relaxed) || busy.swap(true, Ordering::Relaxed) {
+            return glib::ControlFlow::Continue;
+        }
+        let Some(client) = server_state.borrow().client() else {
+            busy.store(false, Ordering::Relaxed);
+            let _ = sender.send(UiEvent::Playback(Err(
+                "Playback server is unavailable. Select Retry.".to_owned(),
+            )));
+            return glib::ControlFlow::Continue;
+        };
+        let sender = sender.clone();
+        let busy = Arc::clone(&busy);
+        thread::spawn(move || {
+            let result = perform_playback_request(&client, PlaybackRequest::State)
+                .map_err(|error| error.to_string());
+            let _ = sender.send(UiEvent::Playback(result));
+            busy.store(false, Ordering::Relaxed);
+        });
+        glib::ControlFlow::Continue
+    });
+}
+
+impl PlaybackUi {
+    fn apply(&self, snapshot: &PlaybackSnapshot, entries: &[LibraryEntry], status: &gtk::Label) {
+        let track_detail = snapshot.track.as_ref().map_or_else(
+            || "".to_owned(),
+            |path| {
+                entries
+                    .iter()
+                    .find(|entry| &entry.path == path)
+                    .map(|entry| {
+                        let title = entry
+                            .metadata
+                            .title
+                            .as_ref()
+                            .map(|title| title.value.as_str())
+                            .unwrap_or("(No title tag)");
+                        let artists = if entry.metadata.artists.is_empty() {
+                            "(No artist tag)".to_owned()
+                        } else {
+                            entry
+                                .metadata
+                                .artists
+                                .iter()
+                                .map(|artist| artist.value.as_str())
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        };
+                        format!("{artists} — {title}")
+                    })
+                    .unwrap_or_else(|| path.display().to_string())
+            },
+        );
+        let state_text = match snapshot.status {
+            PlaybackStatus::Stopped => "Stopped".to_owned(),
+            PlaybackStatus::Playing => "Playing".to_owned(),
+            PlaybackStatus::Paused => "Paused".to_owned(),
+            PlaybackStatus::Ended => "Finished".to_owned(),
+            PlaybackStatus::Failed => "Playback error".to_owned(),
+        };
+        if snapshot.status == PlaybackStatus::Failed {
+            status.set_text(
+                snapshot
+                    .error
+                    .as_deref()
+                    .unwrap_or("GStreamer could not play this audio file."),
+            );
+        } else {
+            status.set_text(&state_text);
+        }
+        if snapshot.track.is_some() {
+            let elapsed = format_time(snapshot.position_ms);
+            let duration = snapshot
+                .duration_ms
+                .map(format_time)
+                .unwrap_or_else(|| "Duration unavailable".to_owned());
+            self.current_track.set_text(&format!(
+                "{state_text}: {track_detail} · {elapsed} / {duration}"
+            ));
+        } else {
+            self.current_track.set_text("Nothing is playing.");
+        }
+        let duration_ms = snapshot.duration_ms.unwrap_or(1).max(1);
+        self.position.set_range(0.0, duration_ms as f64);
+        if !self.position.has_focus() {
+            self.position
+                .set_value(snapshot.position_ms.min(duration_ms) as f64);
+        }
+        let active = matches!(
+            snapshot.status,
+            PlaybackStatus::Playing | PlaybackStatus::Paused
+        );
+        self.pause
+            .set_sensitive(snapshot.status == PlaybackStatus::Playing);
+        self.resume
+            .set_sensitive(snapshot.status == PlaybackStatus::Paused);
+        self.seek
+            .set_sensitive(active && snapshot.duration_ms.is_some());
+        self.stop
+            .set_sensitive(active || snapshot.status == PlaybackStatus::Ended);
+        self.position
+            .set_sensitive(active && snapshot.duration_ms.is_some());
+    }
+}
+
+fn format_time(milliseconds: u64) -> String {
+    let seconds = milliseconds / 1_000;
+    format!("{}:{:02}", seconds / 60, seconds % 60)
 }
 
 fn replace_root_rows(list: &gtk::ListBox, roots: &[PathBuf]) {
@@ -495,17 +827,27 @@ fn replace_root_rows(list: &gtk::ListBox, roots: &[PathBuf]) {
     }
 }
 
-fn replace_catalog_rows(list: &gtk::ListBox, entries: &[LibraryEntry]) {
+fn replace_catalog_rows(
+    list: &gtk::ListBox,
+    entries: &[LibraryEntry],
+    catalog_entries: &Rc<RefCell<Vec<LibraryEntry>>>,
+) {
     while let Some(child) = list.first_child() {
         list.remove(&child);
     }
-    append_catalog_rows(list, entries);
+    catalog_entries.borrow_mut().clear();
+    append_catalog_rows(list, entries, catalog_entries);
 }
 
-fn append_catalog_rows(list: &gtk::ListBox, entries: &[LibraryEntry]) {
+fn append_catalog_rows(
+    list: &gtk::ListBox,
+    entries: &[LibraryEntry],
+    catalog_entries: &Rc<RefCell<Vec<LibraryEntry>>>,
+) {
     for entry in entries {
         list.append(&render_catalog_row(entry));
     }
+    catalog_entries.borrow_mut().extend_from_slice(entries);
 }
 
 fn render_catalog_row(entry: &LibraryEntry) -> gtk::ListBoxRow {

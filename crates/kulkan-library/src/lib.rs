@@ -1,8 +1,12 @@
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 use std::time::Duration;
 
+use gst::prelude::*;
+use gstreamer as gst;
+use gstreamer_pbutils as gst_pbutils;
 use lofty::file::{AudioFile, TaggedFileExt};
 use lofty::tag::{ItemKey, Tag, TagType};
 use serde::{Deserialize, Serialize};
@@ -416,9 +420,78 @@ fn read_metadata(
     let tags = preferred_tags(&tagged_file, &extension);
     let metadata = metadata_from_tags(&tags, &extension);
     let duration = tagged_file.properties().duration();
-    let duration = (!duration.is_zero()).then_some(duration);
+    let duration = if duration.is_zero() {
+        Some(derive_duration(path)?)
+    } else {
+        Some(duration)
+    };
     let content_fingerprint = content_fingerprint(path, &extension)?;
     Ok((metadata, duration, content_fingerprint))
+}
+
+fn derive_duration(path: &Path) -> Result<Duration, String> {
+    static GSTREAMER_INIT: OnceLock<Result<(), String>> = OnceLock::new();
+    GSTREAMER_INIT
+        .get_or_init(|| {
+            gst::init().map_err(|error| format!("could not initialize GStreamer: {error}"))
+        })
+        .as_ref()
+        .map_err(Clone::clone)?;
+
+    let uri = gst::glib::filename_to_uri(path, None)
+        .map_err(|error| format!("could not create a media URI: {error}"))?;
+    let discoverer = gst_pbutils::Discoverer::new(gst::ClockTime::from_seconds(15))
+        .map_err(|error| format!("could not create the GStreamer discoverer: {error}"))?;
+    if let Ok(info) = discoverer.discover_uri(uri.as_str())
+        && info.result() == gst_pbutils::DiscovererResult::Ok
+        && let Some(duration) = info.duration()
+        && duration.nseconds() > 0
+    {
+        return Ok(Duration::from_nanos(duration.nseconds()));
+    }
+
+    decode_duration_to_end(uri.as_str())
+}
+
+fn decode_duration_to_end(uri: &str) -> Result<Duration, String> {
+    let pipeline = gst::ElementFactory::make("playbin")
+        .build()
+        .map_err(|error| format!("could not create the GStreamer playback pipeline: {error}"))?;
+    let sink = gst::ElementFactory::make("fakesink")
+        .property("sync", false)
+        .build()
+        .map_err(|error| format!("could not create a GStreamer processing sink: {error}"))?;
+    pipeline.set_property("uri", uri);
+    pipeline.set_property("audio-sink", sink);
+
+    let bus = pipeline
+        .bus()
+        .ok_or_else(|| "the GStreamer playback pipeline has no message bus".to_owned())?;
+    pipeline
+        .set_state(gst::State::Playing)
+        .map_err(|error| format!("could not process the audio stream: {error}"))?;
+    let result = match bus.timed_pop_filtered(
+        gst::ClockTime::from_seconds(300),
+        &[gst::MessageType::Eos, gst::MessageType::Error],
+    ) {
+        Some(message) => match message.view() {
+            gst::MessageView::Eos(..) => pipeline
+                .query_duration::<gst::ClockTime>()
+                .filter(|duration| duration.nseconds() > 0)
+                .map(|duration| Duration::from_nanos(duration.nseconds()))
+                .ok_or_else(|| {
+                    "GStreamer decoded the track but could not determine its duration".to_owned()
+                }),
+            gst::MessageView::Error(error) => Err(format!(
+                "GStreamer could not decode this audio file: {}",
+                error.error()
+            )),
+            _ => Err("GStreamer returned an unexpected processing result".to_owned()),
+        },
+        None => Err("GStreamer timed out while determining audio duration".to_owned()),
+    };
+    let _ = pipeline.set_state(gst::State::Null);
+    result
 }
 
 fn content_fingerprint(path: &Path, extension: &str) -> Result<ContentFingerprint, String> {

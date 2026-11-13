@@ -2,10 +2,10 @@
 
 ## Project map
 
-- `src/main.rs`: GTK application lifecycle, folder chooser, library controls, and catalog presentation.
-- `crates/kulkan-runtime`: managed server process, single-client activation, and the public client/server library operations.
+- `src/main.rs`: GTK application lifecycle, folder chooser, library controls, catalog presentation, and single-track transport controls.
+- `crates/kulkan-runtime`: managed server process, single-client activation, GStreamer playback, and the public client/server operations.
 - `crates/kulkan-ipc`: private Unix socket, peer validation, and the versioned length-delimited message protocol.
-- `crates/kulkan-library`: filesystem traversal, read-only metadata discovery through `lofty`, scan reconciliation, and catalog presentation data. GStreamer-based duration derivation and playback remain later work.
+- `crates/kulkan-library`: filesystem traversal, read-only metadata discovery through `lofty`, GStreamer duration derivation, scan reconciliation, and catalog presentation data.
 - `SPEC.md`: approved product behavior. Treat it as the acceptance contract; resolved Codeberg issues remain the decision history.
 - `GLOSSARY.md`: domain language. Read it before changing tests or user-facing terminology.
 - `docs/adr/`: architectural decision records, when present.
@@ -31,8 +31,10 @@ Tests exercise behavior at public boundaries:
 
 - `kulkan_library::scan_library` accepts prior catalog state and selected roots, then returns catalog changes, incomplete paths, and media errors. Integration tests cover duplicate/overlapping roots, selected and nested symlinks, metadata/provenance, read-only media, failed scans, missing files, and removed roots.
 - `ServerProcess` exposes root management, explicit scanning, state summaries, and bounded catalog pages. Integration tests start the actual child server and verify the client-visible result.
+- `ServerProcess`/`ServerClient` expose playback and transport snapshots over the child-server IPC. Integration tests use the real GStreamer pipeline with `fakesink` to cover controls, decoding, and media errors without depending on host audio hardware.
+- Unknown media duration is covered through public `scan_library` results; a decodable fixture with unknown duration must produce a positive cached catalog duration.
 - `present_catalog_entry` is the GTK presentation-data boundary. It preserves original tag strings and makes inactive entries non-selectable; GTK renders this model.
-- Folder-portal grants, removable media, host audio routing, assistive technology, and distro compatibility require manual checks on real desktops; do not claim they passed based only on unit tests.
+- Folder-portal grants, removable media, host audio routing, GTK transport wiring, assistive technology, and distro compatibility require manual checks on real desktops; do not claim they passed based only on unit tests.
 
 For each behavior change, add a failing test at the relevant public seam, implement the smallest vertical slice that makes it pass, and then review adjacent failure paths. Keep filesystem and portal errors visible; do not turn an incomplete scan into confirmed missing files.
 

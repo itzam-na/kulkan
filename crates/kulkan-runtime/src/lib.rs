@@ -12,16 +12,28 @@ use kulkan_ipc::{
     Message, ProtocolError, bind_private_socket, peer_pid, read_message, validate_peer,
     write_message,
 };
+pub use kulkan_ipc::{PlaybackSnapshot, PlaybackStatus};
 use kulkan_library::{Catalog, CatalogPage, LibraryState, ScanSummary, scan_library};
+
+mod playback;
 
 const MAX_CATALOG_PAGE_SIZE: usize = 32;
 const LIBRARY_REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Runs the local server protocol until the client asks it to shut down.
 pub fn serve(socket_path: &Path) -> io::Result<()> {
+    serve_with_audio_sink(socket_path, None)
+}
+
+/// Runs the local server with an optional named GStreamer audio sink.
+///
+/// The sink override is intended for headless integration tests; production uses GStreamer's
+/// automatically selected host audio sink.
+pub fn serve_with_audio_sink(socket_path: &Path, audio_sink: Option<&str>) -> io::Result<()> {
     let listener = bind_private_socket(socket_path)?;
     let _cleanup = SocketPathCleanup(socket_path.to_path_buf());
     let mut library = LibraryService::default();
+    let mut playback = playback::PlaybackService::new(audio_sink.map(str::to_owned));
 
     for incoming in listener.incoming() {
         let mut stream = incoming?;
@@ -47,7 +59,11 @@ pub fn serve(socket_path: &Path) -> io::Result<()> {
                 return Ok(());
             }
             request => {
-                let response = library.handle(request);
+                let response = if playback::PlaybackService::handles(&request) {
+                    playback.handle(request)
+                } else {
+                    library.handle(request)
+                };
                 if let Err(error) = write_server_response(&mut stream, &response) {
                     if client_disconnected(&error) {
                         continue;
@@ -236,10 +252,23 @@ impl ServerProcess {
         socket_path: &Path,
         startup_timeout: Duration,
     ) -> io::Result<Self> {
+        Self::start_with_audio_sink(executable, socket_path, startup_timeout, None)
+    }
+
+    /// Starts the server with an explicit GStreamer audio sink, primarily for headless tests.
+    pub fn start_with_audio_sink(
+        executable: &Path,
+        socket_path: &Path,
+        startup_timeout: Duration,
+        audio_sink: Option<&str>,
+    ) -> io::Result<Self> {
         stop_existing_server(socket_path, startup_timeout)?;
-        let mut child = Command::new(executable)
-            .arg("--socket")
-            .arg(socket_path)
+        let mut command = Command::new(executable);
+        command.arg("--socket").arg(socket_path);
+        if let Some(audio_sink) = audio_sink {
+            command.arg("--audio-sink").arg(audio_sink);
+        }
+        let mut child = command
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
@@ -360,6 +389,30 @@ impl ServerProcess {
         self.client().catalog_page(offset, limit)
     }
 
+    pub fn play_track(&self, path: &Path) -> io::Result<PlaybackSnapshot> {
+        self.client().play_track(path)
+    }
+
+    pub fn pause_playback(&self) -> io::Result<PlaybackSnapshot> {
+        self.client().pause_playback()
+    }
+
+    pub fn resume_playback(&self) -> io::Result<PlaybackSnapshot> {
+        self.client().resume_playback()
+    }
+
+    pub fn seek_playback(&self, position_ms: u64) -> io::Result<PlaybackSnapshot> {
+        self.client().seek_playback(position_ms)
+    }
+
+    pub fn stop_playback(&self) -> io::Result<PlaybackSnapshot> {
+        self.client().stop_playback()
+    }
+
+    pub fn playback_state(&self) -> io::Result<PlaybackSnapshot> {
+        self.client().playback_state()
+    }
+
     fn connect_to_child(&self) -> io::Result<UnixStream> {
         let stream = connect(&self.socket_path)?;
         if peer_pid(&stream)? != self.child.id() {
@@ -417,6 +470,30 @@ impl ServerClient {
         }
     }
 
+    pub fn play_track(&self, path: &Path) -> io::Result<PlaybackSnapshot> {
+        expect_playback_state(self.request(Message::PlayTrack(path.to_path_buf()))?)
+    }
+
+    pub fn pause_playback(&self) -> io::Result<PlaybackSnapshot> {
+        expect_playback_state(self.request(Message::PausePlayback)?)
+    }
+
+    pub fn resume_playback(&self) -> io::Result<PlaybackSnapshot> {
+        expect_playback_state(self.request(Message::ResumePlayback)?)
+    }
+
+    pub fn seek_playback(&self, position_ms: u64) -> io::Result<PlaybackSnapshot> {
+        expect_playback_state(self.request(Message::SeekPlayback(position_ms))?)
+    }
+
+    pub fn stop_playback(&self) -> io::Result<PlaybackSnapshot> {
+        expect_playback_state(self.request(Message::StopPlayback)?)
+    }
+
+    pub fn playback_state(&self) -> io::Result<PlaybackSnapshot> {
+        expect_playback_state(self.request(Message::GetPlaybackState)?)
+    }
+
     fn request(&self, request: Message) -> io::Result<Message> {
         let mut stream = UnixStream::connect(&self.socket_path)?;
         validate_peer(&stream)?;
@@ -430,6 +507,17 @@ impl ServerClient {
         write_message(&mut stream, &request)
             .map_err(|error| io::Error::other(error.to_string()))?;
         read_message(&mut stream).map_err(|error| io::Error::other(error.to_string()))
+    }
+}
+
+fn expect_playback_state(response: Message) -> io::Result<PlaybackSnapshot> {
+    match response {
+        Message::PlaybackState(state) => Ok(state),
+        Message::PlaybackOperationFailed(message) => Err(io::Error::other(message)),
+        response => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("server returned an unexpected playback response: {response:?}"),
+        )),
     }
 }
 
