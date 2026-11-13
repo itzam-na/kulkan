@@ -34,6 +34,7 @@ An implementation-ready spec for a single-user, local-only audio player on Linux
 - [Choose the v1 Linux-native technology stack](https://codeberg.org/padi/izmusica/issues/8): use Rust, GTK 4, private Unix-domain IPC, and GStreamer 1.x; application licensing is out of scope for this version.
 - [Set the Linux support, packaging, and audio-format matrix](https://codeberg.org/padi/izmusica/issues/9): Flatpak-only for v1, tested on the named distro baselines; MP3, WAV/PCM, FLAC, Ogg Vorbis, and Opus are supported, with AAC/M4A deferred.
 - [Define the first-version playback queue controls](https://codeberg.org/padi/izmusica/issues/10): queue supports off/current/whole-queue repeat, per-cycle shuffle, manual edits, and skip-on-failure with explicit retry.
+- [Prototype the first-version queue interface](https://codeberg.org/padi/izmusica/issues/11): user selected the Library-first layout with center artwork while idle and matching results replacing it after an explicit search; full prototype is on the prototype branch.
 
 ## Not yet specified
 
