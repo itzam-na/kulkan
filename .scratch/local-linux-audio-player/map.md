@@ -37,7 +37,7 @@ An implementation-ready spec for a single-user, local-only audio player on Linux
 
 ## Not yet specified
 
-- Desktop interaction details such as keyboard controls, accessibility, notifications, and error/recovery behavior.
+- Desktop interaction details beyond the queue: library/filter views, keyboard controls, accessibility, notifications, and recovery from app/server errors.
 - Local database/configuration storage, backup/migration expectations, and server failure/reconnection behavior.
 - Acceptance criteria and what constitutes a complete first release.
 
