@@ -8,7 +8,9 @@ use std::thread;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use kulkan_ipc::{Message, bind_private_socket, read_message, validate_peer, write_message};
+use kulkan_ipc::{
+    Message, bind_private_socket, peer_pid, read_message, validate_peer, write_message,
+};
 
 /// Runs the local server protocol until the client asks it to shut down.
 pub fn serve(socket_path: &Path) -> io::Result<()> {
@@ -144,6 +146,7 @@ impl ServerProcess {
         socket_path: &Path,
         startup_timeout: Duration,
     ) -> io::Result<Self> {
+        stop_existing_server(socket_path, startup_timeout)?;
         let mut child = Command::new(executable)
             .arg("--socket")
             .arg(socket_path)
@@ -155,6 +158,16 @@ impl ServerProcess {
 
         loop {
             if let Ok(mut server) = connect(socket_path) {
+                if peer_pid(&server)? != child.id() {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return Err(io::Error::new(
+                        io::ErrorKind::AddrInUse,
+                        "a different process owns the server socket",
+                    ));
+                }
+                let remaining = deadline.saturating_duration_since(Instant::now());
+                set_io_timeout(&server, remaining.min(Duration::from_millis(100)))?;
                 if write_message(&mut server, &Message::Ping).is_ok()
                     && read_message(&mut server).is_ok_and(|message| message == Message::Pong)
                 {
@@ -184,7 +197,8 @@ impl ServerProcess {
 
     /// Confirms the child still serves the current protocol.
     pub fn ping(&self) -> io::Result<()> {
-        let mut server = connect(&self.socket_path)?;
+        let mut server = self.connect_to_child()?;
+        set_io_timeout(&server, Duration::from_secs(2))?;
         write_message(&mut server, &Message::Ping)
             .map_err(|error| io::Error::other(error.to_string()))?;
         match read_message(&mut server).map_err(|error| io::Error::other(error.to_string()))? {
@@ -202,7 +216,8 @@ impl ServerProcess {
             return Ok(());
         }
 
-        let mut server = connect(&self.socket_path)?;
+        let mut server = self.connect_to_child()?;
+        set_io_timeout(&server, Duration::from_secs(2))?;
         write_message(&mut server, &Message::Shutdown)
             .map_err(|error| io::Error::other(error.to_string()))?;
         match read_message(&mut server).map_err(|error| io::Error::other(error.to_string()))? {
@@ -220,6 +235,17 @@ impl ServerProcess {
     /// Reports whether the child process is still running.
     pub fn is_running(&mut self) -> io::Result<bool> {
         Ok(self.child.try_wait()?.is_none())
+    }
+
+    fn connect_to_child(&self) -> io::Result<UnixStream> {
+        let stream = connect(&self.socket_path)?;
+        if peer_pid(&stream)? != self.child.id() {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "server socket is no longer owned by the managed child",
+            ));
+        }
+        Ok(stream)
     }
 
     fn wait_until_exit(&mut self, timeout: Duration) -> io::Result<()> {
@@ -253,6 +279,52 @@ fn connect(socket_path: &Path) -> io::Result<UnixStream> {
     let stream = UnixStream::connect(socket_path)?;
     validate_peer(&stream)?;
     Ok(stream)
+}
+
+fn stop_existing_server(socket_path: &Path, timeout: Duration) -> io::Result<()> {
+    let mut server = match connect(socket_path) {
+        Ok(server) => server,
+        Err(error)
+            if matches!(
+                error.kind(),
+                io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused
+            ) =>
+        {
+            return Ok(());
+        }
+        Err(error) => return Err(error),
+    };
+    set_io_timeout(&server, timeout)?;
+    write_message(&mut server, &Message::Shutdown)
+        .map_err(|error| io::Error::other(error.to_string()))?;
+    match read_message(&mut server).map_err(|error| io::Error::other(error.to_string()))? {
+        Message::ShutdownAck => {}
+        _ => {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "existing server returned an unexpected response to Shutdown",
+            ));
+        }
+    }
+    drop(server);
+
+    let deadline = Instant::now() + timeout;
+    while socket_path.exists() {
+        if Instant::now() >= deadline {
+            return Err(io::Error::new(
+                io::ErrorKind::TimedOut,
+                "existing server did not release its socket",
+            ));
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    Ok(())
+}
+
+fn set_io_timeout(stream: &UnixStream, timeout: Duration) -> io::Result<()> {
+    let timeout = timeout.max(Duration::from_millis(1));
+    stream.set_read_timeout(Some(timeout))?;
+    stream.set_write_timeout(Some(timeout))
 }
 
 struct SocketPathCleanup(PathBuf);

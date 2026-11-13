@@ -11,3 +11,7 @@ kulkan-ipc = { path = "../kulkan-ipc" }
 [[bin]]
 name = "kulkan-server"
 path = "src/bin/kulkan-server.rs"
+
+[[bin]]
+name = "kulkan-stalled-server"
+path = "src/bin/kulkan-stalled-server.rs"

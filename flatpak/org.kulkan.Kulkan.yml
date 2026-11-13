@@ -21,7 +21,7 @@ modules:
         CARGO_NET_OFFLINE: "true"
     build-commands:
       - cargo --offline fetch --manifest-path Cargo.toml --locked
-      - cargo build --offline --release --workspace --bins --locked
+      - cargo build --offline --release --locked -p kulkan --bin kulkan -p kulkan-runtime --bin kulkan-server
       - install -Dm0755 target/release/kulkan /app/bin/kulkan
       - install -Dm0755 target/release/kulkan-server /app/bin/kulkan-server
       - install -Dm0644 flatpak/org.kulkan.Kulkan.desktop /app/share/applications/org.kulkan.Kulkan.desktop

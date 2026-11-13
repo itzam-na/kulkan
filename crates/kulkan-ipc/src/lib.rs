@@ -154,6 +154,27 @@ fn remove_stale_socket(path: &Path) -> io::Result<()> {
 
 /// Rejects a local socket peer unless it belongs to the current Unix user.
 pub fn validate_peer(stream: &UnixStream) -> io::Result<()> {
+    let credentials = peer_credentials(stream)?;
+    if credentials.uid != unsafe { libc::geteuid() } {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "socket peer belongs to another Unix user",
+        ));
+    }
+    Ok(())
+}
+
+/// Returns the process ID reported by the kernel for a connected Unix socket peer.
+pub fn peer_pid(stream: &UnixStream) -> io::Result<u32> {
+    u32::try_from(peer_credentials(stream)?.pid).map_err(|_| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "kernel returned an invalid peer process ID",
+        )
+    })
+}
+
+fn peer_credentials(stream: &UnixStream) -> io::Result<libc::ucred> {
     let mut credentials: libc::ucred = unsafe { std::mem::zeroed() };
     let mut credentials_len = std::mem::size_of::<libc::ucred>() as libc::socklen_t;
     // SAFETY: credentials and credentials_len are valid writable buffers for SO_PEERCRED.
@@ -175,13 +196,7 @@ pub fn validate_peer(stream: &UnixStream) -> io::Result<()> {
             "kernel returned malformed peer credentials",
         ));
     }
-    if credentials.uid != unsafe { libc::geteuid() } {
-        return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "socket peer belongs to another Unix user",
-        ));
-    }
-    Ok(())
+    Ok(credentials)
 }
 
 /// Writes one versioned JSON message with a four-byte, big-endian length prefix.
