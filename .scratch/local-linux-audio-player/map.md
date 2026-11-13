@@ -20,6 +20,7 @@ An implementation-ready spec for a single-user, local-only audio player on Linux
 - Initial criteria include not-yet-played, artist, album, genre, album/single release year, duration, file location, and player-local play count. Playback is sequential by default, with user-controlled shuffle and repeat.
 - The app-wide played threshold is configurable from 1–100% in integer steps, defaulting to 75%; aggregate play counts stay local.
 - Consult `AGENTS.md`, `GLOSSARY.md`, and the domain guidance in `docs/agents/domain.md`. No existing code or ADRs impose additional constraints.
+- The consolidated implementation-facing document is root `SPEC.md`; linked Codeberg decisions remain the source of truth.
 
 ## Decisions so far
 
@@ -27,6 +28,8 @@ An implementation-ready spec for a single-user, local-only audio player on Linux
 
 - [Find a Linux-native implementation approach that meets the platform requirements](https://codeberg.org/padi/izmusica/issues/2): research recommends Rust, GTK 4, Unix-domain IPC, GStreamer, and Flatpak; alternatives and distro test baselines are documented in the repository research note.
 - [Define criteria-based song selection semantics](https://codeberg.org/padi/izmusica/issues/3): criteria use AND, normalized text and range filters, explicit missing-value handling, artist/album/track ordering, and append selected or all matches to the queue.
+- [Define duration-criterion behavior for unknown durations](https://codeberg.org/padi/izmusica/issues/16): derive duration from audio content through GStreamer when discovery cannot provide it, cache the result, and apply exact/range criteria to the derived duration; report unreadable files as media/discovery errors rather than inventing a value.
+- [Map genre metadata fields for supported audio formats](https://codeberg.org/padi/izmusica/issues/17): map each format's genre tags, preserve ordered values/source provenance, match any value without splitting arbitrary punctuation, and apply explicit missing-value behavior; findings are in the linked research note.
 - [Map audio metadata fields for artist, album, release date, and track number](https://codeberg.org/padi/izmusica/issues/6): research recommends ordered artist credits, format-specific release/track fields, and explicit handling of missing or conflicting values; release dates and single identity have format limits.
 - [Define library scanning and media-file identity behavior](https://codeberg.org/padi/izmusica/issues/5): scans are manual, incomplete areas are preserved, and file/history identity follows explicit path, content, duplicate, and symlink rules.
 - [Research audio-content fingerprints for move and rename detection](https://codeberg.org/padi/izmusica/issues/7): use a format-aware exact encoded-content digest that excludes tags/container bookkeeping; re-encodes remain new identities, while perceptual matches do not transfer history.
@@ -38,11 +41,11 @@ An implementation-ready spec for a single-user, local-only audio player on Linux
 - [Define local state persistence and reset behavior](https://codeberg.org/padi/izmusica/issues/12): persist roots, preferences, rebuildable cache, history, and queue locally; manually export/import app-owned state without media files or cloud sync.
 - [Define client recovery when the local server is unavailable](https://codeberg.org/padi/izmusica/issues/13): use one server instance, one automatic restart, preserve app state, and provide explicit retry after failure.
 - [Prototype library search and criteria controls](https://codeberg.org/padi/izmusica/issues/14): the selected Layout A offers Basic search with inline chips and Advanced search with the rule composer; boolean labels and long-text overflow are clarified in the prototype branch.
+- [Define first-release acceptance criteria](https://codeberg.org/padi/izmusica/issues/15): require an installable local Flatpak and verifiable checks for every settled requirement; test every supported format on all seven environments in issue #9; block on crashes, hangs, media modification, app-state loss, or unusable core/platform workflows; defer numeric performance targets until a reference environment is defined. Core workflows are keyboard-operable and expose GTK accessible names, roles, and states; notifications remain in-app.
 
 ## Not yet specified
 
-- Desktop interaction details beyond the library/search prototype: keyboard controls, accessibility, and notifications.
-- Acceptance criteria and what constitutes a complete first release.
+- None currently.
 
 ## Out of scope
 
