@@ -35,10 +35,12 @@ An implementation-ready spec for a single-user, local-only audio player on Linux
 - [Set the Linux support, packaging, and audio-format matrix](https://codeberg.org/padi/izmusica/issues/9): Flatpak-only for v1, tested on the named distro baselines; MP3, WAV/PCM, FLAC, Ogg Vorbis, and Opus are supported, with AAC/M4A deferred.
 - [Define the first-version playback queue controls](https://codeberg.org/padi/izmusica/issues/10): queue supports off/current/whole-queue repeat, per-cycle shuffle, manual edits, and skip-on-failure with explicit retry.
 - [Prototype the first-version queue interface](https://codeberg.org/padi/izmusica/issues/11): user selected the Library-first layout with center artwork while idle and matching results replacing it after an explicit search; full prototype is on the prototype branch.
+- [Define local state persistence and reset behavior](https://codeberg.org/padi/izmusica/issues/12): persist roots, preferences, rebuildable cache, history, and queue locally; manually export/import app-owned state without media files or cloud sync.
+- [Define client recovery when the local server is unavailable](https://codeberg.org/padi/izmusica/issues/13): use one server instance, one automatic restart, preserve app state, and provide explicit retry after failure.
 
 ## Not yet specified
 
-- Desktop interaction details beyond the queue: library/filter views, keyboard controls, accessibility, notifications, and recovery from app/server errors.
+- Desktop interaction details beyond the queue: library/filter views, keyboard controls, accessibility, and notifications.
 - Acceptance criteria and what constitutes a complete first release.
 
 ## Out of scope
