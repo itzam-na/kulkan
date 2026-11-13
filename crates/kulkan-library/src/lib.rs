@@ -465,6 +465,9 @@ fn fingerprint_wav(bytes: &[u8], hash: &mut Sha256) -> Result<(), String> {
         }
         offset = end + (size % 2);
     }
+    if offset != riff_end {
+        return Err("incomplete RIFF/WAVE chunk header or padding".to_owned());
+    }
     let format = format.ok_or_else(|| "WAVE file has no format chunk".to_owned())?;
     let encoding = read_u16_le(format, 0)?;
     let is_pcm = encoding == 1
@@ -478,6 +481,13 @@ fn fingerprint_wav(bytes: &[u8], hash: &mut Sha256) -> Result<(), String> {
     }
     if data_chunks.is_empty() {
         return Err("WAVE file has no sample data".to_owned());
+    }
+    let block_align = usize::from(read_u16_le(format, 12)?);
+    let sample_data_size = data_chunks
+        .iter()
+        .try_fold(0_usize, |total, samples| total.checked_add(samples.len()));
+    if block_align == 0 || sample_data_size.is_none_or(|size| size % block_align != 0) {
+        return Err("PCM sample data is not aligned to complete sample frames".to_owned());
     }
     hash.update(b"WAV/PCM\0");
     hash.update((format.len() as u64).to_be_bytes());
@@ -907,7 +917,12 @@ fn hash_ogg_packets(packets: &[Vec<u8>], hash: &mut Sha256) -> Result<(), String
     };
     hash.update(b"Ogg logical stream\0");
     if first.get(..7) == Some(&b"\x01vorbis"[..]) {
-        if packets.len() < 4 || packets[1].first() != Some(&3) || packets[2].first() != Some(&5) {
+        if packets.len() < 4
+            || !valid_vorbis_identification(&packets[0])
+            || !valid_ogg_comments(&packets[1], b"\x03vorbis", true)
+            || packets[2].get(..7) != Some(&b"\x05vorbis"[..])
+            || packets[2].len() <= 7
+        {
             return Err("incomplete Ogg Vorbis headers".to_owned());
         }
         hash.update(b"Vorbis\0");
@@ -917,7 +932,7 @@ fn hash_ogg_packets(packets: &[Vec<u8>], hash: &mut Sha256) -> Result<(), String
             hash_packet(hash, packet);
         }
     } else if first.get(..8) == Some(b"OpusHead") {
-        if packets.len() < 3 || packets[1].get(..8) != Some(b"OpusTags") {
+        if packets.len() < 3 || !valid_ogg_comments(&packets[1], b"OpusTags", false) {
             return Err("incomplete Ogg Opus headers".to_owned());
         }
         let head = &packets[0];
@@ -933,6 +948,65 @@ fn hash_ogg_packets(packets: &[Vec<u8>], hash: &mut Sha256) -> Result<(), String
         return Err("unsupported Ogg codec".to_owned());
     }
     Ok(())
+}
+
+fn valid_vorbis_identification(packet: &[u8]) -> bool {
+    packet.len() == 30
+        && packet.get(..7) == Some(&b"\x01vorbis"[..])
+        && packet[7..11] == [0, 0, 0, 0]
+        && packet[11] > 0
+        && u32::from_le_bytes(packet[12..16].try_into().unwrap()) > 0
+        && packet[28] >> 4 >= 6
+        && packet[28] >> 4 <= 13
+        && packet[28] & 0x0f >= 6
+        && packet[28] & 0x0f <= 13
+        && (packet[28] >> 4) >= (packet[28] & 0x0f)
+        && packet[29] == 1
+}
+
+fn valid_ogg_comments(packet: &[u8], signature: &[u8], has_framing_bit: bool) -> bool {
+    if packet.get(..signature.len()) != Some(signature) {
+        return false;
+    }
+    let mut offset = signature.len();
+    let Some(vendor_length) = read_u32_le(packet, offset).ok().map(|value| value as usize) else {
+        return false;
+    };
+    let Some(vendor_end) = offset
+        .checked_add(4)
+        .and_then(|start| start.checked_add(vendor_length))
+    else {
+        return false;
+    };
+    if vendor_end > packet.len() {
+        return false;
+    }
+    offset = vendor_end;
+    let Some(comment_count) = read_u32_le(packet, offset).ok() else {
+        return false;
+    };
+    offset += 4;
+    for _ in 0..comment_count {
+        let Some(comment_length) = read_u32_le(packet, offset).ok().map(|value| value as usize)
+        else {
+            return false;
+        };
+        let Some(comment_end) = offset
+            .checked_add(4)
+            .and_then(|start| start.checked_add(comment_length))
+        else {
+            return false;
+        };
+        if comment_end > packet.len() {
+            return false;
+        }
+        offset = comment_end;
+    }
+    if has_framing_bit {
+        packet.get(offset) == Some(&1) && offset + 1 == packet.len()
+    } else {
+        offset == packet.len()
+    }
 }
 
 fn hash_packet(hash: &mut Sha256, packet: &[u8]) {

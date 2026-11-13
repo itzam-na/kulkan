@@ -546,6 +546,36 @@ fn a_corrupt_ogg_page_does_not_replace_the_last_known_entry() {
 }
 
 #[test]
+fn invalid_vorbis_comment_signature_does_not_replace_the_last_known_entry() {
+    let directory = TestDirectory::new();
+    let root = directory.0.join("music");
+    fs::create_dir(&root).unwrap();
+    let track = root.join("track.ogg");
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/metadata.ogg");
+    fs::copy(fixture, &track).unwrap();
+    let mut previous = scan_library(&Catalog::default(), std::slice::from_ref(&root)).catalog;
+    previous.entries[0].play_count = 3;
+    let old_id = previous.entries[0].id;
+
+    let mut bytes = fs::read(&track).unwrap();
+    let comment_header = bytes
+        .windows(b"\x03vorbis".len())
+        .position(|window| window == b"\x03vorbis")
+        .unwrap();
+    bytes[comment_header] = 0x04;
+    refresh_ogg_checksums(&mut bytes);
+    fs::write(&track, bytes).unwrap();
+
+    let result = scan_library(&previous, std::slice::from_ref(&root));
+
+    assert_eq!(result.media_errors.len(), 1);
+    assert_eq!(result.catalog.entries.len(), 1);
+    assert_eq!(result.catalog.entries[0].id, old_id);
+    assert_eq!(result.catalog.entries[0].play_count, 3);
+    assert!(result.catalog.entries[0].active);
+}
+
+#[test]
 fn chained_ogg_streams_of_the_same_codec_are_fingerprinted_together() {
     let directory = TestDirectory::new();
     let root = directory.0.join("music");
@@ -856,6 +886,35 @@ fn valid_waveformat_extensible_pcm_is_fingerprinted() {
 
     assert!(result.media_errors.is_empty(), "{:?}", result.media_errors);
     assert_eq!(result.catalog.entries.len(), 1);
+}
+
+#[test]
+fn incomplete_pcm_sample_block_does_not_replace_the_last_known_entry() {
+    let directory = TestDirectory::new();
+    let root = directory.0.join("music");
+    fs::create_dir(&root).unwrap();
+    let track = root.join("track.wav");
+    write_tagged_pcm_wav(&track);
+    let mut previous = scan_library(&Catalog::default(), std::slice::from_ref(&root)).catalog;
+    previous.entries[0].play_count = 3;
+    let old_id = previous.entries[0].id;
+
+    let mut bytes = fs::read(&track).unwrap();
+    let data = bytes.windows(4).position(|chunk| chunk == b"data").unwrap();
+    let old_data_size = u32::from_le_bytes(bytes[data + 4..data + 8].try_into().unwrap());
+    bytes[data + 4..data + 8].copy_from_slice(&(old_data_size - 1).to_le_bytes());
+    let riff_size = u32::from_le_bytes(bytes[4..8].try_into().unwrap());
+    bytes[4..8].copy_from_slice(&(riff_size - 1).to_le_bytes());
+    bytes.pop();
+    fs::write(&track, bytes).unwrap();
+
+    let result = scan_library(&previous, std::slice::from_ref(&root));
+
+    assert_eq!(result.media_errors.len(), 1);
+    assert_eq!(result.catalog.entries.len(), 1);
+    assert_eq!(result.catalog.entries[0].id, old_id);
+    assert_eq!(result.catalog.entries[0].play_count, 3);
+    assert!(result.catalog.entries[0].active);
 }
 
 #[test]
