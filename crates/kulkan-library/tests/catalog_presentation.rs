@@ -1,6 +1,9 @@
 use std::path::PathBuf;
 
-use kulkan_library::{LibraryEntry, TaggedValue, TrackMetadata, present_catalog_entry};
+use kulkan_library::{
+    ContentFingerprint, LibraryEntry, TaggedValue, TrackMetadata, present_catalog_entry,
+};
+use uuid::Uuid;
 
 #[test]
 fn catalog_presentation_keeps_original_metadata_for_active_entries() {
@@ -27,6 +30,7 @@ fn inactive_catalog_entries_keep_their_details_but_are_not_selectable() {
 
 fn entry(active: bool) -> LibraryEntry {
     LibraryEntry {
+        id: Uuid::nil(),
         path: PathBuf::from("/music/live.wav"),
         active,
         metadata: TrackMetadata {
@@ -37,6 +41,11 @@ fn entry(active: bool) -> LibraryEntry {
             ..TrackMetadata::default()
         },
         duration: None,
+        play_count: 0,
+        content_fingerprint: ContentFingerprint {
+            version: 1,
+            sha256: [0; 32],
+        },
     }
 }
 

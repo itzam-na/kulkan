@@ -8,3 +8,5 @@ rust-version.workspace = true
 [dependencies]
 lofty = "0.24.0"
 serde = { version = "1", features = ["derive"] }
+sha2 = "0.11.0"
+uuid = { version = "1", features = ["serde", "v4"] }

@@ -54,6 +54,12 @@ python3 flatpak-cargo-generator.py Cargo.lock --output flatpak/cargo-sources.jso
 
 Regenerate, inspect the diff, and verify the Flatpak build before committing dependency changes. Do not hand-edit crate checksums.
 
+### Library content identity
+
+The scanner stores a versioned SHA-256 fingerprint beside each library entry. Fingerprints are format-aware: PCM WAVE hashes its format chunk and sample data; FLAC hashes stream configuration and audio frames; MP3 hashes MPEG audio frames; Ogg Vorbis hashes its identification/setup headers and audio packets; Ogg Opus hashes its decoder configuration and audio packets. Container/tag metadata is excluded. A re-encode is intentionally a different identity. If the canonical representation changes, increment the fingerprint version and add public `scan_library` regression coverage before changing reconciliation behavior.
+
+Identity reconciliation is conservative: same-path exact matches preserve the entry, a unique exact match can transfer an inactive entry's identity on a move, and ambiguous candidates do not transfer history. Files at different paths are never merged.
+
 ## Manual library acceptance checklist
 
 1. Launch the Flatpak under a desktop with `xdg-desktop-portal` and select a folder using **Add Folder…**.

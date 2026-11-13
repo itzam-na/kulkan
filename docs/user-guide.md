@@ -35,6 +35,8 @@ Supported discovery formats are MP3, PCM WAV, FLAC, Ogg Vorbis, and Ogg Opus. AA
 - If a root or subtree cannot be enumerated, Kulkán reports the affected path and preserves last-known entries there. Reconnect the drive or restore access and scan again.
 - Nested symbolic links are skipped. A directory symlink can be scanned when it is explicitly selected as a library root.
 - Reaching a file through overlapping roots or through a selected directory symlink does not duplicate its canonical path. Separate copies at distinct paths remain separate entries.
+- Editing tags refreshes the displayed metadata without changing the entry's identity. Replacing the audio content at the same path creates a new entry and retains the old one as inactive.
+- A rename or move preserves identity only when exactly one inactive entry has the same exact encoded audio content. Ambiguous matches and re-encodes start new entries. The current build does not expose playback history yet, but these identity rules are designed to keep associated history with the correct entry.
 
 ## Server startup
 

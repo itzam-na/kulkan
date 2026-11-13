@@ -6,6 +6,8 @@ use std::time::Duration;
 use lofty::file::{AudioFile, TaggedFileExt};
 use lofty::tag::{ItemKey, Tag, TagType};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
+use uuid::Uuid;
 
 /// One original metadata value and the format field it came from.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -41,6 +43,8 @@ pub struct LibraryRoot {
 /// One file-backed item in the local catalog.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct LibraryEntry {
+    /// Stable identity for this path-backed catalog item and its local play history.
+    pub id: Uuid,
     /// Canonical path, so overlapping roots and selected directory symlinks deduplicate.
     pub path: PathBuf,
     /// False after a complete scan confirms this path is missing or its root was removed.
@@ -48,6 +52,15 @@ pub struct LibraryEntry {
     pub metadata: TrackMetadata,
     /// `None` means the metadata reader could not establish a positive duration.
     pub duration: Option<Duration>,
+    pub play_count: u64,
+    pub content_fingerprint: ContentFingerprint,
+}
+
+/// Versioned SHA-256 identity of supported audio content, excluding tags/container bookkeeping.
+#[derive(Clone, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
+pub struct ContentFingerprint {
+    pub version: u16,
+    pub sha256: [u8; 32],
 }
 
 /// The last known library roots and entries. A scan uses this snapshot to preserve history rows.
@@ -187,16 +200,13 @@ pub fn scan_library(previous: &Catalog, roots: &[PathBuf]) -> ScanResult {
         }
     }
 
-    let mut entries_by_path = previous
-        .entries
-        .iter()
-        .cloned()
-        .map(|entry| (entry.path.clone(), entry))
-        .collect::<std::collections::BTreeMap<_, _>>();
+    let mut entries = previous.entries.clone();
     let mut discovered = HashSet::new();
     let mut enumerated_directories = HashSet::new();
     let mut excluded_symlink_paths = HashSet::new();
     let mut media_errors = Vec::new();
+    let mut active_ids = HashSet::new();
+    let mut claimed_ids = HashSet::new();
 
     for root in &resolved_roots {
         enumerate_directory(
@@ -213,16 +223,62 @@ pub fn scan_library(previous: &Catalog, roots: &[PathBuf]) -> ScanResult {
     discovered_paths.sort();
     for path in &discovered_paths {
         match read_metadata(path) {
-            Ok((metadata, duration)) => {
-                entries_by_path.insert(
-                    path.clone(),
-                    LibraryEntry {
+            Ok((metadata, duration, content_fingerprint)) => {
+                let same_path = entries.iter().position(|entry| {
+                    entry.path == *path
+                        && entry.content_fingerprint == content_fingerprint
+                        && !claimed_ids.contains(&entry.id)
+                });
+                let matching_path = same_path.or_else(|| {
+                    let candidates = entries
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, entry)| {
+                            entry.path != *path
+                                && entry.content_fingerprint == content_fingerprint
+                                && !claimed_ids.contains(&entry.id)
+                                && entry_is_confirmed_missing(
+                                    entry,
+                                    previous,
+                                    &next_roots,
+                                    &discovered,
+                                    &enumerated_directories,
+                                    &excluded_symlink_paths,
+                                    &incomplete_paths,
+                                )
+                        })
+                        .map(|(index, _)| index)
+                        .collect::<Vec<_>>();
+                    if candidates.len() == 1 {
+                        candidates.first().copied()
+                    } else {
+                        None
+                    }
+                });
+
+                if let Some(index) = matching_path {
+                    let entry = &mut entries[index];
+                    entry.path = path.clone();
+                    entry.active = true;
+                    entry.metadata = metadata;
+                    entry.duration = duration;
+                    entry.content_fingerprint = content_fingerprint;
+                    active_ids.insert(entry.id);
+                    claimed_ids.insert(entry.id);
+                } else {
+                    let id = Uuid::new_v4();
+                    entries.push(LibraryEntry {
+                        id,
                         path: path.clone(),
                         active: true,
                         metadata,
                         duration,
-                    },
-                );
+                        play_count: 0,
+                        content_fingerprint,
+                    });
+                    active_ids.insert(id);
+                    claimed_ids.insert(id);
+                }
             }
             Err(error) => {
                 incomplete_paths.insert(path.clone());
@@ -234,49 +290,28 @@ pub fn scan_library(previous: &Catalog, roots: &[PathBuf]) -> ScanResult {
         }
     }
 
-    for entry in entries_by_path.values_mut() {
+    for entry in &mut entries {
+        if active_ids.contains(&entry.id) {
+            continue;
+        }
+
         if discovered.contains(&entry.path) {
-            entry.active = true;
+            // A parse failure is incomplete and must not erase the last usable record.
+            if !media_errors.iter().any(|error| error.path == entry.path) {
+                entry.active = false;
+            }
             continue;
         }
 
-        let covered_by_current_root = next_roots.iter().any(|root| {
-            root.resolved_path
-                .as_ref()
-                .is_some_and(|resolved| entry.path.starts_with(resolved))
-        });
-        let selected_root_was_removed = !covered_by_current_root
-            && previous.roots.iter().any(|old_root| {
-                old_root
-                    .resolved_path
-                    .as_ref()
-                    .is_some_and(|resolved| entry.path.starts_with(resolved))
-                    && !next_roots.iter().any(|new_root| {
-                        new_root.selected_path == old_root.selected_path
-                            && new_root.resolved_path == old_root.resolved_path
-                    })
-            });
-        if selected_root_was_removed {
-            entry.active = false;
-            continue;
-        }
-
-        let parent = entry.path.parent();
-        let area_is_incomplete = incomplete_paths.iter().any(|area| {
-            entry.path.starts_with(area)
-                || parent.is_some_and(|parent| parent == area || parent.starts_with(area))
-        });
-        if !area_is_incomplete
-            && excluded_symlink_paths
-                .iter()
-                .any(|path| entry.path.starts_with(path))
-        {
-            entry.active = false;
-            continue;
-        }
-        if !area_is_incomplete
-            && parent.is_some_and(|parent| enumerated_directories.contains(parent))
-        {
+        if entry_is_confirmed_missing(
+            entry,
+            previous,
+            &next_roots,
+            &discovered,
+            &enumerated_directories,
+            &excluded_symlink_paths,
+            &incomplete_paths,
+        ) {
             entry.active = false;
         }
     }
@@ -284,8 +319,7 @@ pub fn scan_library(previous: &Catalog, roots: &[PathBuf]) -> ScanResult {
     let mut incomplete_paths = incomplete_paths.into_iter().collect::<Vec<_>>();
     incomplete_paths.sort();
     media_errors.sort_by(|left, right| left.path.cmp(&right.path));
-    let mut entries = entries_by_path.into_values().collect::<Vec<_>>();
-    entries.sort_by(|left, right| left.path.cmp(&right.path));
+    entries.sort_by(|left, right| left.path.cmp(&right.path).then(left.id.cmp(&right.id)));
 
     ScanResult {
         catalog: Catalog {
@@ -297,6 +331,52 @@ pub fn scan_library(previous: &Catalog, roots: &[PathBuf]) -> ScanResult {
     }
 }
 
+fn entry_is_confirmed_missing(
+    entry: &LibraryEntry,
+    previous: &Catalog,
+    roots: &[LibraryRoot],
+    discovered: &HashSet<PathBuf>,
+    enumerated_directories: &HashSet<PathBuf>,
+    excluded_symlink_paths: &HashSet<PathBuf>,
+    incomplete_paths: &BTreeSet<PathBuf>,
+) -> bool {
+    if discovered.contains(&entry.path) {
+        return false;
+    }
+    if !entry.active {
+        return true;
+    }
+    let covered_by_current_root = roots.iter().any(|root| {
+        root.resolved_path
+            .as_ref()
+            .is_some_and(|resolved| entry.path.starts_with(resolved))
+    });
+    let root_was_removed = !covered_by_current_root
+        && previous.roots.iter().any(|old_root| {
+            old_root
+                .resolved_path
+                .as_ref()
+                .is_some_and(|resolved| entry.path.starts_with(resolved))
+                && !roots.iter().any(|new_root| {
+                    new_root.selected_path == old_root.selected_path
+                        && new_root.resolved_path == old_root.resolved_path
+                })
+        });
+    if root_was_removed {
+        return true;
+    }
+    let parent = entry.path.parent();
+    let incomplete = incomplete_paths.iter().any(|area| {
+        entry.path.starts_with(area)
+            || parent.is_some_and(|parent| parent == area || parent.starts_with(area))
+    });
+    !incomplete
+        && (parent.is_some_and(|parent| enumerated_directories.contains(parent))
+            || excluded_symlink_paths
+                .iter()
+                .any(|path| entry.path.starts_with(path)))
+}
+
 fn previous_resolved_path(previous: &Catalog, selected_path: &Path) -> Option<PathBuf> {
     previous
         .roots
@@ -305,7 +385,9 @@ fn previous_resolved_path(previous: &Catalog, selected_path: &Path) -> Option<Pa
         .and_then(|root| root.resolved_path.clone())
 }
 
-fn read_metadata(path: &Path) -> Result<(TrackMetadata, Option<Duration>), String> {
+fn read_metadata(
+    path: &Path,
+) -> Result<(TrackMetadata, Option<Duration>, ContentFingerprint), String> {
     let tagged_file = lofty::read_from_path(path)
         .map_err(|error| format!("could not read audio metadata: {error}"))?;
     let extension = path
@@ -317,7 +399,299 @@ fn read_metadata(path: &Path) -> Result<(TrackMetadata, Option<Duration>), Strin
     let metadata = metadata_from_tags(&tags, &extension);
     let duration = tagged_file.properties().duration();
     let duration = (!duration.is_zero()).then_some(duration);
-    Ok((metadata, duration))
+    let content_fingerprint = content_fingerprint(path, &extension)?;
+    Ok((metadata, duration, content_fingerprint))
+}
+
+fn content_fingerprint(path: &Path, extension: &str) -> Result<ContentFingerprint, String> {
+    let bytes = fs::read(path).map_err(|error| format!("could not read audio content: {error}"))?;
+    let mut hash = Sha256::new();
+    hash.update(b"kulkan-audio-content\0");
+    hash.update(1_u16.to_be_bytes());
+    match extension {
+        "wav" => fingerprint_wav(&bytes, &mut hash)?,
+        "flac" => fingerprint_flac(&bytes, &mut hash)?,
+        "mp3" => fingerprint_mp3(&bytes, &mut hash)?,
+        "ogg" | "opus" => fingerprint_ogg(&bytes, &mut hash)?,
+        _ => return Err("unsupported audio format for content identity".to_owned()),
+    }
+    Ok(ContentFingerprint {
+        version: 1,
+        sha256: hash.finalize().into(),
+    })
+}
+
+fn fingerprint_wav(bytes: &[u8], hash: &mut Sha256) -> Result<(), String> {
+    if bytes.get(..4) != Some(b"RIFF") || bytes.get(8..12) != Some(b"WAVE") {
+        return Err("not a RIFF/WAVE file".to_owned());
+    }
+    let riff_end = 8_usize
+        .checked_add(read_u32_le(bytes, 4)? as usize)
+        .filter(|end| *end <= bytes.len())
+        .ok_or_else(|| "truncated RIFF/WAVE file".to_owned())?;
+    let mut offset = 12;
+    let mut format = None;
+    let mut data_chunks = Vec::new();
+    while offset + 8 <= riff_end {
+        let id = &bytes[offset..offset + 4];
+        let size = read_u32_le(bytes, offset + 4)? as usize;
+        let start = offset + 8;
+        let end = start
+            .checked_add(size)
+            .filter(|end| *end <= riff_end)
+            .ok_or_else(|| "truncated RIFF chunk".to_owned())?;
+        if id == b"fmt " {
+            format = Some(&bytes[start..end]);
+        } else if id == b"data" {
+            data_chunks.push(&bytes[start..end]);
+        }
+        offset = end + (size % 2);
+    }
+    let format = format.ok_or_else(|| "WAVE file has no format chunk".to_owned())?;
+    let encoding = read_u16_le(format, 0)?;
+    let is_pcm = encoding == 1
+        || (encoding == 0xfffe
+            && format.len() >= 40
+            && read_u16_le(format, 24)? == 1
+            && format.get(26..40)
+                == Some(&[0, 0, 0, 0, 0, 0x10, 0x80, 0, 0, 0xaa, 0, 0x38, 0x9b, 0x71][..]));
+    if !is_pcm {
+        return Err("only PCM WAVE files have supported content identity".to_owned());
+    }
+    if data_chunks.is_empty() {
+        return Err("WAVE file has no sample data".to_owned());
+    }
+    hash.update(b"WAV/PCM\0");
+    hash.update((format.len() as u64).to_be_bytes());
+    hash.update(format);
+    for samples in data_chunks {
+        hash.update(samples);
+    }
+    Ok(())
+}
+
+fn fingerprint_flac(bytes: &[u8], hash: &mut Sha256) -> Result<(), String> {
+    if bytes.get(..4) != Some(b"fLaC") {
+        return Err("not a FLAC stream".to_owned());
+    }
+    let mut offset = 4;
+    let mut first = true;
+    let mut stream_info = None;
+    loop {
+        let header = bytes
+            .get(offset..offset + 4)
+            .ok_or_else(|| "truncated FLAC metadata".to_owned())?;
+        let last = header[0] & 0x80 != 0;
+        let block_type = header[0] & 0x7f;
+        let size =
+            (usize::from(header[1]) << 16) | (usize::from(header[2]) << 8) | usize::from(header[3]);
+        let start = offset + 4;
+        let end = start
+            .checked_add(size)
+            .filter(|end| *end <= bytes.len())
+            .ok_or_else(|| "truncated FLAC metadata block".to_owned())?;
+        if first {
+            if block_type != 0 || size != 34 {
+                return Err("FLAC stream does not begin with STREAMINFO".to_owned());
+            }
+            stream_info = Some(&bytes[start..end]);
+            first = false;
+        }
+        offset = end;
+        if last {
+            break;
+        }
+    }
+    let info = stream_info.ok_or_else(|| "FLAC stream has no STREAMINFO".to_owned())?;
+    let packed = u64::from_be_bytes(info[10..18].try_into().unwrap());
+    let sample_rate = packed >> 44;
+    let channels = ((packed >> 41) & 0x7) + 1;
+    let bits_per_sample = ((packed >> 36) & 0x1f) + 1;
+    hash.update(b"FLAC\0");
+    hash.update(sample_rate.to_be_bytes());
+    hash.update(channels.to_be_bytes());
+    hash.update(bits_per_sample.to_be_bytes());
+    hash.update(
+        bytes
+            .get(offset..)
+            .filter(|frames| !frames.is_empty())
+            .ok_or_else(|| "FLAC stream has no audio frames".to_owned())?,
+    );
+    Ok(())
+}
+
+fn fingerprint_mp3(bytes: &[u8], hash: &mut Sha256) -> Result<(), String> {
+    hash.update(b"MPEG-audio-frames\0");
+    let mut offset = 0;
+    let mut frames = 0_u64;
+    while offset < bytes.len() {
+        if let Some(end) = id3_tag_end(bytes, offset) {
+            offset = end;
+            continue;
+        }
+        if bytes.get(offset..offset + 3) == Some(b"TAG") {
+            if offset + 128 != bytes.len() {
+                return Err("unexpected bytes after an ID3v1 tag".to_owned());
+            }
+            offset += 128;
+            continue;
+        }
+        let Some(frame_length) = mp3_frame_length(bytes.get(offset..).unwrap_or_default()) else {
+            if frames == 0 && bytes[offset..].iter().all(|byte| *byte == 0) {
+                break;
+            }
+            return Err("invalid or truncated MPEG audio frame".to_owned());
+        };
+        let frame = bytes
+            .get(offset..offset + frame_length)
+            .ok_or_else(|| "truncated MPEG audio frame".to_owned())?;
+        hash.update((frame.len() as u32).to_be_bytes());
+        hash.update(frame);
+        frames += 1;
+        offset += frame_length;
+    }
+    if frames == 0 {
+        return Err("MPEG audio stream has no frames".to_owned());
+    }
+    Ok(())
+}
+
+fn id3_tag_end(bytes: &[u8], offset: usize) -> Option<usize> {
+    let header = bytes.get(offset..offset + 10)?;
+    if &header[..3] != b"ID3" || header[6..10].iter().any(|byte| byte & 0x80 != 0) {
+        return None;
+    }
+    let size = (usize::from(header[6]) << 21)
+        | (usize::from(header[7]) << 14)
+        | (usize::from(header[8]) << 7)
+        | usize::from(header[9]);
+    offset
+        .checked_add(10 + size + usize::from(header[5] & 0x10 != 0) * 10)
+        .filter(|end| *end <= bytes.len())
+}
+
+fn mp3_frame_length(frame: &[u8]) -> Option<usize> {
+    let header = u32::from_be_bytes(frame.get(..4)?.try_into().ok()?);
+    if header >> 21 != 0x7ff {
+        return None;
+    }
+    let version = (header >> 19) & 0x3;
+    let layer = (header >> 17) & 0x3;
+    let bitrate_index = ((header >> 12) & 0xf) as usize;
+    let sample_index = ((header >> 10) & 0x3) as usize;
+    if version == 1 || layer != 1 || !(1..=14).contains(&bitrate_index) || sample_index == 3 {
+        return None;
+    }
+    const MPEG1_LAYER3: [u16; 16] = [
+        0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 0,
+    ];
+    const MPEG2_LAYER3: [u16; 16] = [
+        0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 0,
+    ];
+    const SAMPLE_RATES: [u32; 3] = [44_100, 48_000, 32_000];
+    let divisor = match version {
+        3 => 1,
+        2 => 2,
+        _ => 4,
+    };
+    let sample_rate = SAMPLE_RATES[sample_index] / divisor;
+    let bitrate = if version == 3 {
+        MPEG1_LAYER3[bitrate_index]
+    } else {
+        MPEG2_LAYER3[bitrate_index]
+    };
+    let padding = ((header >> 9) & 1) as usize;
+    Some(
+        (if version == 3 { 144 } else { 72 } * usize::from(bitrate) * 1000) / sample_rate as usize
+            + padding,
+    )
+}
+
+fn fingerprint_ogg(bytes: &[u8], hash: &mut Sha256) -> Result<(), String> {
+    let mut offset = 0;
+    let mut serial = None;
+    let mut packet_buffer = Vec::new();
+    let mut packets = Vec::new();
+    while offset < bytes.len() {
+        let header = bytes
+            .get(offset..offset + 27)
+            .filter(|header| &header[..4] == b"OggS" && header[4] == 0)
+            .ok_or_else(|| "invalid or truncated Ogg page".to_owned())?;
+        let page_serial = u32::from_le_bytes(header[14..18].try_into().unwrap());
+        if serial.is_some_and(|serial| serial != page_serial) {
+            return Err("multiple Ogg logical streams are not supported".to_owned());
+        }
+        serial = Some(page_serial);
+        let segment_count = header[26] as usize;
+        let lacing = bytes
+            .get(offset + 27..offset + 27 + segment_count)
+            .ok_or_else(|| "truncated Ogg lacing table".to_owned())?;
+        let mut body_offset = offset + 27 + segment_count;
+        for &segment_size in lacing {
+            let end = body_offset + segment_size as usize;
+            packet_buffer.extend_from_slice(
+                bytes
+                    .get(body_offset..end)
+                    .ok_or_else(|| "truncated Ogg page body".to_owned())?,
+            );
+            body_offset = end;
+            if segment_size < 255 {
+                packets.push(std::mem::take(&mut packet_buffer));
+            }
+        }
+        offset = body_offset;
+    }
+    let Some(first) = packets.first() else {
+        return Err("Ogg stream has no packets".to_owned());
+    };
+    if first.get(..7) == Some(&b"\x01vorbis"[..]) {
+        if packets.len() < 4 || packets[1].first() != Some(&3) || packets[2].first() != Some(&5) {
+            return Err("incomplete Ogg Vorbis headers".to_owned());
+        }
+        hash.update(b"Ogg/Vorbis\0");
+        hash_packet(hash, &packets[0]);
+        hash_packet(hash, &packets[2]);
+        for packet in &packets[3..] {
+            hash_packet(hash, packet);
+        }
+    } else if first.get(..8) == Some(b"OpusHead") {
+        if packets.len() < 3 || packets[1].get(..8) != Some(b"OpusTags") {
+            return Err("incomplete Ogg Opus headers".to_owned());
+        }
+        let mut head = packets[0].clone();
+        if head.len() < 19 {
+            return Err("invalid OpusHead packet".to_owned());
+        }
+        head[16] = 0;
+        head[17] = 0;
+        hash.update(b"Ogg/Opus\0");
+        hash_packet(hash, &head);
+        for packet in &packets[2..] {
+            hash_packet(hash, packet);
+        }
+    } else {
+        return Err("unsupported Ogg codec".to_owned());
+    }
+    Ok(())
+}
+
+fn hash_packet(hash: &mut Sha256, packet: &[u8]) {
+    hash.update((packet.len() as u64).to_be_bytes());
+    hash.update(packet);
+}
+
+fn read_u16_le(bytes: &[u8], offset: usize) -> Result<u16, String> {
+    bytes
+        .get(offset..offset + 2)
+        .map(|value| u16::from_le_bytes(value.try_into().unwrap()))
+        .ok_or_else(|| "truncated audio header".to_owned())
+}
+
+fn read_u32_le(bytes: &[u8], offset: usize) -> Result<u32, String> {
+    bytes
+        .get(offset..offset + 4)
+        .map(|value| u32::from_le_bytes(value.try_into().unwrap()))
+        .ok_or_else(|| "truncated audio header".to_owned())
 }
 
 fn preferred_tags<'a>(tagged_file: &'a lofty::file::TaggedFile, extension: &str) -> Vec<&'a Tag> {

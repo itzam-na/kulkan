@@ -342,6 +342,250 @@ fn duplicate_artist_credits_are_removed_without_changing_first_billed_order() {
 }
 
 #[test]
+fn metadata_only_changes_preserve_library_entry_identity_and_play_count() {
+    let directory = TestDirectory::new();
+    let root = directory.0.join("music");
+    fs::create_dir(&root).unwrap();
+    let track = root.join("one.wav");
+    write_tagged_pcm_wav_with_album(&track, "Live set");
+    let mut previous = scan_library(&Catalog::default(), std::slice::from_ref(&root)).catalog;
+    previous.entries[0].play_count = 7;
+    let previous_id = previous.entries[0].id;
+
+    write_tagged_pcm_wav_with_album(&track, "Studio set");
+    let result = scan_library(&previous, std::slice::from_ref(&root));
+
+    assert_eq!(result.catalog.entries.len(), 1);
+    assert_eq!(result.catalog.entries[0].id, previous_id);
+    assert_eq!(result.catalog.entries[0].play_count, 7);
+    assert_eq!(
+        result.catalog.entries[0]
+            .metadata
+            .release_title
+            .as_ref()
+            .unwrap()
+            .value,
+        "Studio set"
+    );
+}
+
+#[test]
+fn metadata_only_changes_preserve_identity_in_every_supported_format() {
+    let directory = TestDirectory::new();
+    let root = directory.0.join("music");
+    fs::create_dir(&root).unwrap();
+    for extension in ["mp3", "flac", "wav", "ogg", "opus"] {
+        let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures")
+            .join(format!("metadata.{extension}"));
+        fs::copy(fixture, root.join(format!("track.{extension}"))).unwrap();
+    }
+    let mut previous = scan_library(&Catalog::default(), std::slice::from_ref(&root)).catalog;
+    assert_eq!(previous.entries.len(), 5);
+    for entry in &mut previous.entries {
+        entry.play_count = 7;
+    }
+    let ids = previous
+        .entries
+        .iter()
+        .map(|entry| (entry.path.clone(), entry.id))
+        .collect::<std::collections::HashMap<_, _>>();
+    for entry in &previous.entries {
+        replace_bytes_once(&entry.path, b"Live set", b"Live SET");
+    }
+
+    let result = scan_library(&previous, std::slice::from_ref(&root));
+
+    assert!(result.media_errors.is_empty(), "{:?}", result.media_errors);
+    assert_eq!(result.catalog.entries.len(), 5);
+    for entry in &result.catalog.entries {
+        assert_eq!(entry.id, ids[&entry.path], "{}", entry.path.display());
+        assert_eq!(entry.play_count, 7, "{}", entry.path.display());
+        assert_eq!(
+            entry.metadata.release_title.as_ref().unwrap().value,
+            "Live SET",
+            "{}",
+            entry.path.display()
+        );
+    }
+}
+
+#[test]
+fn changed_audio_at_the_same_path_gets_new_identity_and_keeps_old_history_inactive() {
+    let directory = TestDirectory::new();
+    let root = directory.0.join("music");
+    fs::create_dir(&root).unwrap();
+    let track = root.join("one.wav");
+    write_tagged_pcm_wav_with_sample(&track, "Live set", 0);
+    let mut previous = scan_library(&Catalog::default(), std::slice::from_ref(&root)).catalog;
+    previous.entries[0].play_count = 7;
+    let old_id = previous.entries[0].id;
+
+    write_tagged_pcm_wav_with_sample(&track, "Live set", 1);
+    let result = scan_library(&previous, std::slice::from_ref(&root));
+
+    assert_eq!(result.catalog.entries.len(), 2);
+    let current = result
+        .catalog
+        .entries
+        .iter()
+        .find(|entry| entry.active)
+        .unwrap();
+    let old = result
+        .catalog
+        .entries
+        .iter()
+        .find(|entry| !entry.active)
+        .unwrap();
+    assert_ne!(current.id, old_id);
+    assert_eq!(current.play_count, 0);
+    assert_eq!(old.id, old_id);
+    assert_eq!(old.play_count, 7);
+}
+
+#[test]
+fn returning_audio_at_its_original_path_restores_its_inactive_identity_and_history() {
+    let directory = TestDirectory::new();
+    let root = directory.0.join("music");
+    fs::create_dir(&root).unwrap();
+    let track = root.join("one.wav");
+    write_tagged_pcm_wav_with_sample(&track, "Live set", 0);
+    let mut previous = scan_library(&Catalog::default(), std::slice::from_ref(&root)).catalog;
+    previous.entries[0].play_count = 7;
+    let original_id = previous.entries[0].id;
+
+    fs::remove_file(&track).unwrap();
+    let missing = scan_library(&previous, std::slice::from_ref(&root));
+    assert!(!missing.catalog.entries[0].active);
+    write_tagged_pcm_wav_with_sample(&track, "Studio set", 0);
+    let returned = scan_library(&missing.catalog, std::slice::from_ref(&root));
+
+    assert_eq!(returned.catalog.entries.len(), 1);
+    assert_eq!(returned.catalog.entries[0].id, original_id);
+    assert_eq!(returned.catalog.entries[0].play_count, 7);
+    assert!(returned.catalog.entries[0].active);
+    assert_eq!(
+        returned.catalog.entries[0]
+            .metadata
+            .release_title
+            .as_ref()
+            .unwrap()
+            .value,
+        "Studio set"
+    );
+}
+
+#[test]
+fn a_unique_content_match_at_a_new_path_transfers_identity_and_play_count() {
+    let directory = TestDirectory::new();
+    let root = directory.0.join("music");
+    fs::create_dir(&root).unwrap();
+    let old_path = root.join("old.wav");
+    let new_path = root.join("new.wav");
+    write_tagged_pcm_wav(&old_path);
+    let mut previous = scan_library(&Catalog::default(), std::slice::from_ref(&root)).catalog;
+    previous.entries[0].play_count = 7;
+    let original_id = previous.entries[0].id;
+    fs::rename(&old_path, &new_path).unwrap();
+
+    let result = scan_library(&previous, std::slice::from_ref(&root));
+
+    assert_eq!(result.catalog.entries.len(), 1);
+    assert_eq!(result.catalog.entries[0].path, new_path);
+    assert_eq!(result.catalog.entries[0].id, original_id);
+    assert_eq!(result.catalog.entries[0].play_count, 7);
+}
+
+#[test]
+fn ambiguous_content_matches_do_not_transfer_history_to_a_new_path() {
+    let directory = TestDirectory::new();
+    let root = directory.0.join("music");
+    fs::create_dir(&root).unwrap();
+    let first = root.join("first.wav");
+    let second = root.join("second.wav");
+    write_tagged_pcm_wav(&first);
+    fs::copy(&first, &second).unwrap();
+    let mut previous = scan_library(&Catalog::default(), std::slice::from_ref(&root)).catalog;
+    previous.entries[0].play_count = 3;
+    previous.entries[1].play_count = 5;
+    fs::remove_file(&first).unwrap();
+    fs::remove_file(&second).unwrap();
+    let moved = root.join("moved.wav");
+    write_tagged_pcm_wav(&moved);
+
+    let result = scan_library(&previous, std::slice::from_ref(&root));
+
+    assert_eq!(result.catalog.entries.len(), 3);
+    let new_entry = result
+        .catalog
+        .entries
+        .iter()
+        .find(|entry| entry.path == moved)
+        .unwrap();
+    assert_eq!(new_entry.play_count, 0);
+    assert!(previous.entries.iter().all(|old| {
+        result
+            .catalog
+            .entries
+            .iter()
+            .any(|entry| entry.id == old.id && !entry.active)
+    }));
+}
+
+#[test]
+fn identical_audio_at_distinct_paths_remains_two_active_entries() {
+    let directory = TestDirectory::new();
+    let root = directory.0.join("music");
+    fs::create_dir(&root).unwrap();
+    let first = root.join("first.wav");
+    let second = root.join("second.wav");
+    write_tagged_pcm_wav(&first);
+    fs::copy(&first, &second).unwrap();
+
+    let result = scan_library(&Catalog::default(), std::slice::from_ref(&root));
+
+    assert_eq!(result.catalog.entries.len(), 2);
+    assert!(result.catalog.entries.iter().all(|entry| entry.active));
+    assert_ne!(result.catalog.entries[0].id, result.catalog.entries[1].id);
+}
+
+#[test]
+fn returning_entry_keeps_its_identity_when_an_earlier_sorted_copy_is_added() {
+    let directory = TestDirectory::new();
+    let root = directory.0.join("music");
+    fs::create_dir(&root).unwrap();
+    let original = root.join("z-original.wav");
+    write_tagged_pcm_wav(&original);
+    let mut previous = scan_library(&Catalog::default(), std::slice::from_ref(&root)).catalog;
+    previous.entries[0].play_count = 7;
+    let original_id = previous.entries[0].id;
+
+    fs::remove_file(&original).unwrap();
+    let missing = scan_library(&previous, std::slice::from_ref(&root));
+    let copy = root.join("a-copy.wav");
+    write_tagged_pcm_wav(&original);
+    fs::copy(&original, &copy).unwrap();
+    let returned = scan_library(&missing.catalog, std::slice::from_ref(&root));
+
+    let original_entry = returned
+        .catalog
+        .entries
+        .iter()
+        .find(|entry| entry.path == original)
+        .unwrap();
+    let copy_entry = returned
+        .catalog
+        .entries
+        .iter()
+        .find(|entry| entry.path == copy)
+        .unwrap();
+    assert_eq!(original_entry.id, original_id);
+    assert_eq!(original_entry.play_count, 7);
+    assert_ne!(copy_entry.id, original_id);
+    assert_eq!(copy_entry.play_count, 0);
+}
+
+#[test]
 fn a_malformed_audio_file_is_reported_and_does_not_destroy_its_last_known_entry() {
     let directory = TestDirectory::new();
     let root = directory.0.join("music");
@@ -409,6 +653,14 @@ fn an_unreadable_subtree_is_reported_without_marking_its_entries_missing() {
 }
 
 fn write_tagged_pcm_wav(path: &std::path::Path) {
+    write_tagged_pcm_wav_with_album(path, "Live set");
+}
+
+fn write_tagged_pcm_wav_with_album(path: &std::path::Path, album: &str) {
+    write_tagged_pcm_wav_with_sample(path, album, 0);
+}
+
+fn write_tagged_pcm_wav_with_sample(path: &std::path::Path, album: &str, sample: u8) {
     fn chunk(id: &[u8; 4], body: &[u8], destination: &mut Vec<u8>) {
         destination.extend_from_slice(id);
         destination.extend_from_slice(&(body.len() as u32).to_le_bytes());
@@ -436,14 +688,25 @@ fn write_tagged_pcm_wav(path: &std::path::Path) {
 
     let mut info = b"INFO".to_vec();
     info_item(b"IART", "Ana & Ben", &mut info);
-    info_item(b"IPRD", "Live set", &mut info);
+    info_item(b"IPRD", album, &mut info);
     info_item(b"IGNR", "Ambient music", &mut info);
     info_item(b"ICRD", "2000-01-01", &mut info);
     chunk(b"LIST", &info, &mut wav_body);
-    chunk(b"data", &vec![0; 16_000], &mut wav_body);
+    chunk(b"data", &vec![sample; 16_000], &mut wav_body);
 
     let mut file = b"RIFF".to_vec();
     file.extend_from_slice(&(wav_body.len() as u32).to_le_bytes());
     file.extend_from_slice(&wav_body);
     fs::write(path, file).unwrap();
+}
+
+fn replace_bytes_once(path: &std::path::Path, from: &[u8], to: &[u8]) {
+    assert_eq!(from.len(), to.len());
+    let mut bytes = fs::read(path).unwrap();
+    let start = bytes
+        .windows(from.len())
+        .position(|window| window == from)
+        .unwrap_or_else(|| panic!("tag value not found in {}", path.display()));
+    bytes[start..start + to.len()].copy_from_slice(to);
+    fs::write(path, bytes).unwrap();
 }
