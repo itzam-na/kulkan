@@ -993,6 +993,34 @@ fn a_truncated_flac_frame_does_not_replace_the_last_known_entry() {
 }
 
 #[test]
+fn flac_streaminfo_sample_count_mismatch_does_not_replace_the_last_known_entry() {
+    let directory = TestDirectory::new();
+    let root = directory.0.join("music");
+    fs::create_dir(&root).unwrap();
+    let track = root.join("track.flac");
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/metadata.flac");
+    fs::copy(fixture, &track).unwrap();
+    let mut previous = scan_library(&Catalog::default(), std::slice::from_ref(&root)).catalog;
+    previous.entries[0].play_count = 3;
+    let old_id = previous.entries[0].id;
+
+    let mut bytes = fs::read(&track).unwrap();
+    let packed = u64::from_be_bytes(bytes[18..26].try_into().unwrap());
+    let total_samples = packed & ((1_u64 << 36) - 1);
+    let sample_count_mask = (1_u64 << 36) - 1;
+    let changed_packed = (packed & !sample_count_mask) | (total_samples + 1);
+    bytes[18..26].copy_from_slice(&changed_packed.to_be_bytes());
+    fs::write(&track, bytes).unwrap();
+    let result = scan_library(&previous, std::slice::from_ref(&root));
+
+    assert_eq!(result.media_errors.len(), 1);
+    assert_eq!(result.catalog.entries.len(), 1);
+    assert_eq!(result.catalog.entries[0].id, old_id);
+    assert_eq!(result.catalog.entries[0].play_count, 3);
+    assert!(result.catalog.entries[0].active);
+}
+
+#[test]
 fn successfully_missing_files_and_removed_roots_become_inactive() {
     let directory = TestDirectory::new();
     let root = directory.0.join("music");

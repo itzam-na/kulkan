@@ -530,12 +530,13 @@ fn fingerprint_flac(bytes: &[u8], hash: &mut Sha256) -> Result<(), String> {
     let sample_rate = packed >> 44;
     let channels = ((packed >> 41) & 0x7) + 1;
     let bits_per_sample = ((packed >> 36) & 0x1f) + 1;
+    let total_samples = packed & ((1_u64 << 36) - 1);
     hash.update(b"FLAC\0");
     hash.update(sample_rate.to_be_bytes());
     hash.update(channels.to_be_bytes());
     hash.update(bits_per_sample.to_be_bytes());
     let audio_end = audio_end_without_trailing_tags(bytes);
-    validate_flac_frames(bytes, offset, audio_end)?;
+    validate_flac_frames(bytes, offset, audio_end, total_samples)?;
     hash.update(
         bytes
             .get(offset..audio_end)
@@ -595,13 +596,23 @@ fn audio_end_without_trailing_tags(bytes: &[u8]) -> usize {
     }
 }
 
-fn validate_flac_frames(bytes: &[u8], start: usize, end: usize) -> Result<(), String> {
-    if start >= end || flac_frame_header_end(bytes, start, end).is_none() {
-        return Err("FLAC stream has no valid audio frame".to_owned());
-    }
+struct FlacFrameHeader {
+    end: usize,
+    block_samples: u64,
+}
+
+fn validate_flac_frames(
+    bytes: &[u8],
+    start: usize,
+    end: usize,
+    expected_samples: u64,
+) -> Result<(), String> {
     let mut frame_start = start;
+    let mut frame_header = flac_frame_header(bytes, frame_start, end)
+        .ok_or_else(|| "FLAC stream has no valid audio frame".to_owned())?;
+    let mut total_samples = 0_u64;
     loop {
-        let mut search_from = frame_start + 6;
+        let mut search_from = frame_header.end;
         let next_frame = loop {
             let Some(candidate) = find_flac_frame_header(bytes, search_from, end) else {
                 break None;
@@ -612,10 +623,21 @@ fn validate_flac_frames(bytes: &[u8], start: usize, end: usize) -> Result<(), St
             search_from = candidate + 1;
         };
         if let Some(next_frame) = next_frame {
+            total_samples = total_samples
+                .checked_add(frame_header.block_samples)
+                .ok_or_else(|| "FLAC sample count overflow".to_owned())?;
             frame_start = next_frame;
+            frame_header = flac_frame_header(bytes, frame_start, end)
+                .ok_or_else(|| "invalid FLAC frame header".to_owned())?;
             continue;
         }
         if flac_crc16_is_valid(&bytes[frame_start..end]) {
+            total_samples = total_samples
+                .checked_add(frame_header.block_samples)
+                .ok_or_else(|| "FLAC sample count overflow".to_owned())?;
+            if expected_samples != 0 && total_samples != expected_samples {
+                return Err("FLAC frame sample count does not match STREAMINFO".to_owned());
+            }
             return Ok(());
         }
         return Err("truncated or corrupt FLAC audio frame".to_owned());
@@ -626,10 +648,13 @@ fn find_flac_frame_header(bytes: &[u8], start: usize, end: usize) -> Option<usiz
     if end < 6 {
         return None;
     }
-    (start..=end - 6).find(|&offset| flac_frame_header_end(bytes, offset, end).is_some())
+    (start..=end - 6).find(|&offset| flac_frame_header(bytes, offset, end).is_some())
 }
 
-fn flac_frame_header_end(bytes: &[u8], start: usize, end: usize) -> Option<usize> {
+fn flac_frame_header(bytes: &[u8], start: usize, end: usize) -> Option<FlacFrameHeader> {
+    if start.checked_add(4)? > end {
+        return None;
+    }
     let header = bytes.get(start..start + 4)?;
     if header[0] != 0xff
         || header[1] & 0xfc != 0xf8
@@ -661,11 +686,24 @@ fn flac_frame_header_end(bytes: &[u8], start: usize, end: usize) -> Option<usize
     }
     offset += number_length;
 
-    match header[2] >> 4 {
-        6 => offset += 1,
-        7 => offset += 2,
-        _ => {}
-    }
+    let block_samples = match header[2] >> 4 {
+        1 => 192,
+        2..=5 => 576_u64 << ((header[2] >> 4) - 2),
+        6 => {
+            let samples = u64::from(*bytes.get(offset)?) + 1;
+            offset += 1;
+            samples
+        }
+        7 => {
+            let samples = u64::from(u16::from_be_bytes(
+                bytes.get(offset..offset + 2)?.try_into().ok()?,
+            )) + 1;
+            offset += 2;
+            samples
+        }
+        code @ 8..=15 => 256_u64 << (code - 8),
+        _ => return None,
+    };
     match header[2] & 0x0f {
         12 => offset += 1,
         13 | 14 => offset += 2,
@@ -677,7 +715,10 @@ fn flac_frame_header_end(bytes: &[u8], start: usize, end: usize) -> Option<usize
     if crc8(&bytes[start..crc_offset]) != crc || crc_offset + 1 > end {
         return None;
     }
-    Some(crc_offset + 1)
+    Some(FlacFrameHeader {
+        end: crc_offset + 1,
+        block_samples,
+    })
 }
 
 fn crc8(bytes: &[u8]) -> u8 {
