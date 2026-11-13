@@ -821,6 +821,10 @@ fn fingerprint_ogg(bytes: &[u8], hash: &mut Sha256) -> Result<(), String> {
                 packets.push(std::mem::take(&mut packet_buffer));
             }
         }
+        let expected_crc = u32::from_le_bytes(header[22..26].try_into().unwrap());
+        if ogg_page_crc(&bytes[offset..body_offset]) != expected_crc {
+            return Err("Ogg page checksum does not match".to_owned());
+        }
         offset = body_offset;
     }
     if !saw_eos {
@@ -864,6 +868,22 @@ fn fingerprint_ogg(bytes: &[u8], hash: &mut Sha256) -> Result<(), String> {
 fn hash_packet(hash: &mut Sha256, packet: &[u8]) {
     hash.update((packet.len() as u64).to_be_bytes());
     hash.update(packet);
+}
+
+fn ogg_page_crc(page: &[u8]) -> u32 {
+    let mut crc = 0_u32;
+    for (offset, &byte) in page.iter().enumerate() {
+        let byte = if (22..26).contains(&offset) { 0 } else { byte };
+        crc ^= u32::from(byte) << 24;
+        for _ in 0..8 {
+            crc = if crc & 0x8000_0000 != 0 {
+                (crc << 1) ^ 0x04c1_1db7
+            } else {
+                crc << 1
+            };
+        }
+    }
+    crc
 }
 
 fn read_u16_le(bytes: &[u8], offset: usize) -> Result<u16, String> {

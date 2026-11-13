@@ -428,6 +428,7 @@ fn changing_opus_output_gain_changes_the_content_identity() {
         .position(|window| window == b"OpusHead")
         .unwrap();
     bytes[head + 16] = bytes[head + 16].wrapping_add(1);
+    refresh_ogg_checksums(&mut bytes);
     fs::write(&track, bytes).unwrap();
     let result = scan_library(&previous, std::slice::from_ref(&root));
 
@@ -497,6 +498,42 @@ fn a_missing_ogg_end_page_does_not_replace_the_last_known_entry() {
         .sum::<usize>();
     assert_eq!(last_page + 27 + lacing_count + body_size, bytes.len());
     bytes.truncate(last_page);
+    fs::write(&track, bytes).unwrap();
+
+    let result = scan_library(&previous, std::slice::from_ref(&root));
+
+    assert_eq!(result.media_errors.len(), 1);
+    assert_eq!(result.catalog.entries.len(), 1);
+    assert_eq!(result.catalog.entries[0].id, old_id);
+    assert_eq!(result.catalog.entries[0].play_count, 3);
+    assert!(result.catalog.entries[0].active);
+}
+
+#[test]
+fn a_corrupt_ogg_page_does_not_replace_the_last_known_entry() {
+    let directory = TestDirectory::new();
+    let root = directory.0.join("music");
+    fs::create_dir(&root).unwrap();
+    let track = root.join("track.ogg");
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/metadata.ogg");
+    fs::copy(fixture, &track).unwrap();
+    let mut previous = scan_library(&Catalog::default(), std::slice::from_ref(&root)).catalog;
+    previous.entries[0].play_count = 3;
+    let old_id = previous.entries[0].id;
+
+    let mut bytes = fs::read(&track).unwrap();
+    let last_page = bytes
+        .windows(4)
+        .rposition(|window| window == b"OggS")
+        .unwrap();
+    let lacing_count = bytes[last_page + 26] as usize;
+    let body_start = last_page + 27 + lacing_count;
+    let body_size = bytes[last_page + 27..body_start]
+        .iter()
+        .map(|size| usize::from(*size))
+        .sum::<usize>();
+    assert!(body_size > 0);
+    bytes[body_start + body_size - 1] ^= 1;
     fs::write(&track, bytes).unwrap();
 
     let result = scan_library(&previous, std::slice::from_ref(&root));
@@ -1011,5 +1048,41 @@ fn replace_bytes_once(path: &std::path::Path, from: &[u8], to: &[u8]) {
         .position(|window| window == from)
         .unwrap_or_else(|| panic!("tag value not found in {}", path.display()));
     bytes[start..start + to.len()].copy_from_slice(to);
+    if path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| matches!(extension, "ogg" | "opus"))
+    {
+        refresh_ogg_checksums(&mut bytes);
+    }
     fs::write(path, bytes).unwrap();
+}
+
+fn refresh_ogg_checksums(bytes: &mut [u8]) {
+    let mut offset = 0;
+    while offset < bytes.len() {
+        assert_eq!(&bytes[offset..offset + 4], b"OggS");
+        let segment_count = bytes[offset + 26] as usize;
+        let lacing_start = offset + 27;
+        let body_start = lacing_start + segment_count;
+        let body_size = bytes[lacing_start..body_start]
+            .iter()
+            .map(|size| usize::from(*size))
+            .sum::<usize>();
+        let page_end = body_start + body_size;
+        bytes[offset + 22..offset + 26].fill(0);
+        let mut crc = 0_u32;
+        for &byte in &bytes[offset..page_end] {
+            crc ^= u32::from(byte) << 24;
+            for _ in 0..8 {
+                crc = if crc & 0x8000_0000 != 0 {
+                    (crc << 1) ^ 0x04c1_1db7
+                } else {
+                    crc << 1
+                };
+            }
+        }
+        bytes[offset + 22..offset + 26].copy_from_slice(&crc.to_le_bytes());
+        offset = page_end;
+    }
 }
