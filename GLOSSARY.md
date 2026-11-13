@@ -31,6 +31,12 @@ A playback of one Track that may be paused and resumed. It ends when playback is
 **Qualifying play**:
 A Playback attempt in which the listener hears the configured share of distinct Track content. An attempt can qualify at most once.
 
+**Queue**:
+An ordered sequence of Queue entries selected for playback.
+
+**Queue entry**:
+One occurrence of a Library entry in a Queue; the same Library entry may appear more than once.
+
 **Single**:
 A music release consisting of one track.
 
