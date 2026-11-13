@@ -641,6 +641,41 @@ fn a_unique_content_match_at_a_new_path_transfers_identity_and_play_count() {
 }
 
 #[test]
+fn a_reencoded_track_at_a_new_path_does_not_inherit_history() {
+    let directory = TestDirectory::new();
+    let root = directory.0.join("music");
+    fs::create_dir(&root).unwrap();
+    let old_path = root.join("old.wav");
+    let new_path = root.join("new.wav");
+    write_tagged_pcm_wav_with_sample(&old_path, "Live set", 0);
+    let mut previous = scan_library(&Catalog::default(), std::slice::from_ref(&root)).catalog;
+    previous.entries[0].play_count = 7;
+    let original_id = previous.entries[0].id;
+    fs::remove_file(&old_path).unwrap();
+    write_tagged_pcm_wav_with_sample(&new_path, "Live set", 1);
+
+    let result = scan_library(&previous, std::slice::from_ref(&root));
+
+    assert_eq!(result.catalog.entries.len(), 2);
+    let current = result
+        .catalog
+        .entries
+        .iter()
+        .find(|entry| entry.path == new_path)
+        .unwrap();
+    assert!(current.active);
+    assert_ne!(current.id, original_id);
+    assert_eq!(current.play_count, 0);
+    assert!(
+        result
+            .catalog
+            .entries
+            .iter()
+            .any(|entry| entry.id == original_id && !entry.active && entry.play_count == 7)
+    );
+}
+
+#[test]
 fn ambiguous_content_matches_do_not_transfer_history_to_a_new_path() {
     let directory = TestDirectory::new();
     let root = directory.0.join("music");
@@ -849,6 +884,30 @@ fn a_malformed_audio_file_is_reported_and_does_not_destroy_its_last_known_entry(
         result.catalog.entries[0].metadata.artists[0].value,
         "Ana & Ben"
     );
+}
+
+#[test]
+fn a_truncated_flac_frame_does_not_replace_the_last_known_entry() {
+    let directory = TestDirectory::new();
+    let root = directory.0.join("music");
+    fs::create_dir(&root).unwrap();
+    let track = root.join("track.flac");
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/metadata.flac");
+    fs::copy(fixture, &track).unwrap();
+    let mut previous = scan_library(&Catalog::default(), std::slice::from_ref(&root)).catalog;
+    previous.entries[0].play_count = 3;
+    let old_id = previous.entries[0].id;
+
+    let mut bytes = fs::read(&track).unwrap();
+    bytes.pop();
+    fs::write(&track, bytes).unwrap();
+    let result = scan_library(&previous, std::slice::from_ref(&root));
+
+    assert_eq!(result.media_errors.len(), 1);
+    assert_eq!(result.catalog.entries.len(), 1);
+    assert_eq!(result.catalog.entries[0].id, old_id);
+    assert_eq!(result.catalog.entries[0].play_count, 3);
+    assert!(result.catalog.entries[0].active);
 }
 
 #[test]

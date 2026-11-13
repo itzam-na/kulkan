@@ -529,13 +529,8 @@ fn fingerprint_flac(bytes: &[u8], hash: &mut Sha256) -> Result<(), String> {
     hash.update(sample_rate.to_be_bytes());
     hash.update(channels.to_be_bytes());
     hash.update(bits_per_sample.to_be_bytes());
-    let mut audio_end = bytes.len();
-    if audio_end >= 128 && bytes.get(audio_end - 128..audio_end - 125) == Some(b"TAG") {
-        audio_end -= 128;
-    }
-    if let Some(tag_start) = apev2_tag_start(bytes, audio_end) {
-        audio_end = tag_start;
-    }
+    let audio_end = audio_end_without_trailing_tags(bytes);
+    validate_flac_frames(bytes, offset, audio_end)?;
     hash.update(
         bytes
             .get(offset..audio_end)
@@ -547,13 +542,7 @@ fn fingerprint_flac(bytes: &[u8], hash: &mut Sha256) -> Result<(), String> {
 
 fn fingerprint_mp3(bytes: &[u8], hash: &mut Sha256) -> Result<(), String> {
     hash.update(b"MPEG-audio-frames\0");
-    let mut audio_end = bytes.len();
-    if audio_end >= 128 && bytes.get(audio_end - 128..audio_end - 125) == Some(b"TAG") {
-        audio_end -= 128;
-    }
-    if let Some(tag_start) = apev2_tag_start(bytes, audio_end) {
-        audio_end = tag_start;
-    }
+    let audio_end = audio_end_without_trailing_tags(bytes);
     let mut offset = 0;
     let mut frames = 0_u64;
     while offset < audio_end {
@@ -583,6 +572,142 @@ fn fingerprint_mp3(bytes: &[u8], hash: &mut Sha256) -> Result<(), String> {
         return Err("MPEG audio stream has no frames".to_owned());
     }
     Ok(())
+}
+
+fn audio_end_without_trailing_tags(bytes: &[u8]) -> usize {
+    let mut end = bytes.len();
+    loop {
+        let previous_end = end;
+        if end >= 128 && bytes.get(end - 128..end - 125) == Some(b"TAG") {
+            end -= 128;
+        }
+        if let Some(tag_start) = apev2_tag_start(bytes, end) {
+            end = tag_start;
+        }
+        if end == previous_end {
+            return end;
+        }
+    }
+}
+
+fn validate_flac_frames(bytes: &[u8], start: usize, end: usize) -> Result<(), String> {
+    if start >= end || flac_frame_header_end(bytes, start, end).is_none() {
+        return Err("FLAC stream has no valid audio frame".to_owned());
+    }
+    let mut frame_start = start;
+    loop {
+        let mut search_from = frame_start + 6;
+        let next_frame = loop {
+            let Some(candidate) = find_flac_frame_header(bytes, search_from, end) else {
+                break None;
+            };
+            if flac_crc16_is_valid(&bytes[frame_start..candidate]) {
+                break Some(candidate);
+            }
+            search_from = candidate + 1;
+        };
+        if let Some(next_frame) = next_frame {
+            frame_start = next_frame;
+            continue;
+        }
+        if flac_crc16_is_valid(&bytes[frame_start..end]) {
+            return Ok(());
+        }
+        return Err("truncated or corrupt FLAC audio frame".to_owned());
+    }
+}
+
+fn find_flac_frame_header(bytes: &[u8], start: usize, end: usize) -> Option<usize> {
+    if end < 6 {
+        return None;
+    }
+    (start..=end - 6).find(|&offset| flac_frame_header_end(bytes, offset, end).is_some())
+}
+
+fn flac_frame_header_end(bytes: &[u8], start: usize, end: usize) -> Option<usize> {
+    let header = bytes.get(start..start + 4)?;
+    if header[0] != 0xff
+        || header[1] & 0xfc != 0xf8
+        || header[1] & 0x02 != 0
+        || header[2] >> 4 == 0
+        || header[3] >> 4 > 10
+        || matches!((header[3] >> 1) & 0x7, 3 | 7)
+        || header[3] & 1 != 0
+    {
+        return None;
+    }
+
+    let mut offset = start + 4;
+    let first_number_byte = *bytes.get(offset)?;
+    let number_length = match first_number_byte {
+        0x00..=0x7f => 1,
+        0xc0..=0xdf => 2,
+        0xe0..=0xef => 3,
+        0xf0..=0xf7 => 4,
+        0xf8..=0xfb => 5,
+        0xfc..=0xfd => 6,
+        0xfe => 7,
+        _ => return None,
+    };
+    for continuation in bytes.get(offset + 1..offset + number_length)? {
+        if continuation & 0xc0 != 0x80 {
+            return None;
+        }
+    }
+    offset += number_length;
+
+    match header[2] >> 4 {
+        6 => offset += 1,
+        7 => offset += 2,
+        _ => {}
+    }
+    match header[2] & 0x0f {
+        12 => offset += 1,
+        13 | 14 => offset += 2,
+        15 => return None,
+        _ => {}
+    }
+    let crc_offset = offset;
+    let crc = *bytes.get(crc_offset)?;
+    if crc8(&bytes[start..crc_offset]) != crc || crc_offset + 1 > end {
+        return None;
+    }
+    Some(crc_offset + 1)
+}
+
+fn crc8(bytes: &[u8]) -> u8 {
+    let mut crc = 0_u8;
+    for byte in bytes {
+        crc ^= byte;
+        for _ in 0..8 {
+            crc = if crc & 0x80 != 0 {
+                (crc << 1) ^ 0x07
+            } else {
+                crc << 1
+            };
+        }
+    }
+    crc
+}
+
+fn flac_crc16_is_valid(frame: &[u8]) -> bool {
+    if frame.len() < 2 {
+        return false;
+    }
+    let checksum_offset = frame.len() - 2;
+    let expected = u16::from_be_bytes([frame[checksum_offset], frame[checksum_offset + 1]]);
+    let mut crc = 0_u16;
+    for byte in &frame[..checksum_offset] {
+        crc ^= u16::from(*byte) << 8;
+        for _ in 0..8 {
+            crc = if crc & 0x8000 != 0 {
+                (crc << 1) ^ 0x8005
+            } else {
+                crc << 1
+            };
+        }
+    }
+    crc == expected
 }
 
 fn apev2_tag_start(bytes: &[u8], end: usize) -> Option<usize> {
