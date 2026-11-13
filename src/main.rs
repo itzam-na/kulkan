@@ -551,7 +551,10 @@ enum UiEvent {
     Roots(Result<LibraryState, String>),
     Catalog(Result<(ScanSummary, CatalogPage, ServerClient), String>),
     CatalogPage(Result<CatalogPage, String>),
-    Playback(Result<PlaybackSnapshot, String>),
+    Playback {
+        state: Result<PlaybackSnapshot, String>,
+        command_error: Option<String>,
+    },
 }
 
 enum PlaybackRequest {
@@ -638,32 +641,42 @@ fn install_library_events(receiver: Receiver<UiEvent>, ui: LibraryUi) {
                     load_more.set_sensitive(true);
                     status.set_text(&format!("Could not load more tracks: {error}"));
                 }
-                UiEvent::Playback(Ok(snapshot)) => {
-                    playback.apply(&snapshot, &catalog_entries.borrow(), &status);
-                    poll_playback.store(
-                        matches!(
-                            snapshot.status,
-                            PlaybackStatus::Playing | PlaybackStatus::Paused
-                        ),
-                        Ordering::Relaxed,
-                    );
-                    playback.play_selected.set_sensitive(
-                        catalog_list
-                            .selected_row()
-                            .and_then(|row| {
-                                catalog_entries.borrow().get(row.index() as usize).cloned()
-                            })
-                            .is_some_and(|entry| entry.active),
-                    );
-                }
-                UiEvent::Playback(Err(error)) => {
-                    poll_playback.store(false, Ordering::Relaxed);
-                    status.set_text(&format!("Playback failed: {error}"));
-                    playback.current_track.set_text("Playback error");
-                    playback.pause.set_sensitive(false);
-                    playback.resume.set_sensitive(false);
-                    playback.seek.set_sensitive(false);
-                    playback.stop.set_sensitive(false);
+                UiEvent::Playback {
+                    state,
+                    command_error,
+                } => {
+                    match state {
+                        Ok(snapshot) => {
+                            playback.apply(&snapshot, &catalog_entries.borrow(), &status);
+                            poll_playback.store(
+                                matches!(
+                                    snapshot.status,
+                                    PlaybackStatus::Playing | PlaybackStatus::Paused
+                                ),
+                                Ordering::Relaxed,
+                            );
+                            playback.play_selected.set_sensitive(
+                                catalog_list
+                                    .selected_row()
+                                    .and_then(|row| {
+                                        catalog_entries.borrow().get(row.index() as usize).cloned()
+                                    })
+                                    .is_some_and(|entry| entry.active),
+                            );
+                        }
+                        Err(error) => {
+                            poll_playback.store(false, Ordering::Relaxed);
+                            status.set_text(&format!("Playback failed: {error}"));
+                            playback.current_track.set_text("Playback error");
+                            playback.pause.set_sensitive(false);
+                            playback.resume.set_sensitive(false);
+                            playback.seek.set_sensitive(false);
+                            playback.stop.set_sensitive(false);
+                        }
+                    }
+                    if let Some(error) = command_error {
+                        status.set_text(&error);
+                    }
                 }
             }
         }
@@ -677,8 +690,22 @@ fn send_playback_operation(
     sender: Sender<UiEvent>,
 ) {
     thread::spawn(move || {
-        let result = perform_playback_request(&client, request).map_err(|error| error.to_string());
-        let _ = sender.send(UiEvent::Playback(result));
+        let (state, command_error) = match perform_playback_request(&client, request) {
+            Ok(snapshot) => (Ok(snapshot), None),
+            Err(error) => match client.playback_state() {
+                Ok(snapshot) => (Ok(snapshot), Some(error.to_string())),
+                Err(state_error) => (
+                    Err(format!(
+                        "{error}; could not refresh playback state: {state_error}"
+                    )),
+                    None,
+                ),
+            },
+        };
+        let _ = sender.send(UiEvent::Playback {
+            state,
+            command_error,
+        });
     });
 }
 
@@ -708,9 +735,10 @@ fn install_playback_poll(
         }
         let Some(client) = server_state.borrow().client() else {
             busy.store(false, Ordering::Relaxed);
-            let _ = sender.send(UiEvent::Playback(Err(
-                "Playback server is unavailable. Select Retry.".to_owned(),
-            )));
+            let _ = sender.send(UiEvent::Playback {
+                state: Err("Playback server is unavailable. Select Retry.".to_owned()),
+                command_error: None,
+            });
             return glib::ControlFlow::Continue;
         };
         let sender = sender.clone();
@@ -718,7 +746,10 @@ fn install_playback_poll(
         thread::spawn(move || {
             let result = perform_playback_request(&client, PlaybackRequest::State)
                 .map_err(|error| error.to_string());
-            let _ = sender.send(UiEvent::Playback(result));
+            let _ = sender.send(UiEvent::Playback {
+                state: result,
+                command_error: None,
+            });
             busy.store(false, Ordering::Relaxed);
         });
         glib::ControlFlow::Continue
