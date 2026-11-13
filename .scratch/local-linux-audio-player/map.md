@@ -37,6 +37,7 @@ An implementation-ready spec for a single-user, local-only audio player on Linux
 - [Prototype the first-version queue interface](https://codeberg.org/padi/izmusica/issues/11): user selected the Library-first layout with center artwork while idle and matching results replacing it after an explicit search; full prototype is on the prototype branch.
 - [Define local state persistence and reset behavior](https://codeberg.org/padi/izmusica/issues/12): persist roots, preferences, rebuildable cache, history, and queue locally; manually export/import app-owned state without media files or cloud sync.
 - [Define client recovery when the local server is unavailable](https://codeberg.org/padi/izmusica/issues/13): use one server instance, one automatic restart, preserve app state, and provide explicit retry after failure.
+- [Prototype library search and criteria controls](https://codeberg.org/padi/izmusica/issues/14): the selected Layout A offers Basic search with inline chips and Advanced search with the rule composer; boolean labels and long-text overflow are clarified in the prototype branch.
 
 ## Not yet specified
 
