@@ -1,4 +1,4 @@
-# Local Linux Audio Player Specification
+# Kulkán — Local Linux Audio Player Specification
 
 **Status:** Consolidated v1 specification, ready for implementation planning
 **Audience:** Product and implementation contributors
@@ -7,7 +7,7 @@ This document consolidates the approved Wayfinder decisions for a single-user, p
 
 ## 1. Product goal and boundaries
 
-Build a native Linux desktop audio player for one listener's local music collection. The listener chooses folders, scans them explicitly, searches and filters the catalog, and selects tracks for a user-managed playback queue.
+Build **Kulkán**, a native Linux desktop audio player for one listener's local music collection. The listener chooses folders, scans them explicitly, searches and filters the catalog, and selects tracks for a user-managed playback queue.
 
 The core experience must work offline. The application is for personal use and must not edit, move, rename, or organize the user's media files. V1 is audio-only and single-user.
 

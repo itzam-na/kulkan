@@ -4,11 +4,12 @@
 
 ## Destination
 
-An implementation-ready spec for a single-user, local-only audio player on Linux, built from a separate native desktop client and server process. The spec, not the implementation, is the deliverable.
+An implementation-ready spec for Kulkán, a single-user, local-only audio player on Linux, built from a separate native desktop client and server process. The spec, not the implementation, is the deliverable.
 
 ## Notes
 
 - The user is the sole local listener with a personal collection of local audio files.
+- The application is named Kulkán.
 - The desktop client and server are separate processes and communicate locally. The client starts the server as needed and stops it when the client exits.
 - The app must not be an Electron, Java, or web-based app disguised as native; it should run directly on Linux.
 - Required distro families: Ubuntu, Arch, Mint, Debian, Fedora, and openSUSE. x86-64 is the initial CPU architecture.
