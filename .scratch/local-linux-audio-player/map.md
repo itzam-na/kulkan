@@ -40,7 +40,7 @@ An implementation-ready spec for a single-user, local-only audio player on Linux
 
 ## Not yet specified
 
-- Desktop interaction details beyond the queue: library/filter views, keyboard controls, accessibility, and notifications.
+- Desktop interaction details beyond the library/search prototype: keyboard controls, accessibility, and notifications.
 - Acceptance criteria and what constitutes a complete first release.
 
 ## Out of scope
