@@ -1,5 +1,5 @@
 [workspace]
-members = [".", "crates/kulkan-ipc", "crates/kulkan-runtime"]
+members = [".", "crates/kulkan-ipc", "crates/kulkan-library", "crates/kulkan-runtime"]
 resolver = "3"
 
 [workspace.package]
@@ -16,6 +16,7 @@ rust-version.workspace = true
 
 [dependencies]
 gtk = { package = "gtk4", version = "0.10" }
+kulkan-library = { path = "crates/kulkan-library" }
 kulkan-runtime = { path = "crates/kulkan-runtime" }
 libc = "0.2"
 

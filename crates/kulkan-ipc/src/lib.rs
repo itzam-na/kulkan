@@ -4,8 +4,9 @@ use std::io::{self, Read, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
+use kulkan_library::{CatalogPage, LibraryState, ScanSummary};
 use serde::{Deserialize, Serialize};
 
 /// The current wire-protocol version understood by Kulkán clients and servers.
@@ -23,6 +24,15 @@ pub enum Message {
     ShutdownAck,
     Activate,
     ActivateAck,
+    AddLibraryRoot(PathBuf),
+    RemoveLibraryRoot(PathBuf),
+    GetLibraryState,
+    GetCatalogPage { offset: usize, limit: usize },
+    ScanLibrary,
+    LibraryState(LibraryState),
+    CatalogPage(CatalogPage),
+    ScanSummary(ScanSummary),
+    LibraryOperationFailed(String),
 }
 
 #[derive(Debug, Deserialize, Serialize)]

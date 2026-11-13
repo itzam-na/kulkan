@@ -9,13 +9,19 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use kulkan_ipc::{
-    Message, bind_private_socket, peer_pid, read_message, validate_peer, write_message,
+    Message, ProtocolError, bind_private_socket, peer_pid, read_message, validate_peer,
+    write_message,
 };
+use kulkan_library::{Catalog, CatalogPage, LibraryState, ScanSummary, scan_library};
+
+const MAX_CATALOG_PAGE_SIZE: usize = 32;
+const LIBRARY_REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
 
 /// Runs the local server protocol until the client asks it to shut down.
 pub fn serve(socket_path: &Path) -> io::Result<()> {
     let listener = bind_private_socket(socket_path)?;
     let _cleanup = SocketPathCleanup(socket_path.to_path_buf());
+    let mut library = LibraryService::default();
 
     for incoming in listener.incoming() {
         let mut stream = incoming?;
@@ -28,14 +34,27 @@ pub fn serve(socket_path: &Path) -> io::Result<()> {
             Err(_) => continue,
         };
         match request {
-            Message::Ping => write_message(&mut stream, &Message::Pong)
-                .map_err(|error| io::Error::other(error.to_string()))?,
+            Message::Ping => {
+                if let Err(error) = write_server_response(&mut stream, &Message::Pong) {
+                    if client_disconnected(&error) {
+                        continue;
+                    }
+                    return Err(error);
+                }
+            }
             Message::Shutdown => {
-                write_message(&mut stream, &Message::ShutdownAck)
-                    .map_err(|error| io::Error::other(error.to_string()))?;
+                write_server_response(&mut stream, &Message::ShutdownAck)?;
                 return Ok(());
             }
-            _ => {}
+            request => {
+                let response = library.handle(request);
+                if let Err(error) = write_server_response(&mut stream, &response) {
+                    if client_disconnected(&error) {
+                        continue;
+                    }
+                    return Err(error);
+                }
+            }
         }
     }
     Ok(())
@@ -45,6 +64,77 @@ pub fn serve(socket_path: &Path) -> io::Result<()> {
 pub struct ServerProcess {
     child: Child,
     socket_path: PathBuf,
+}
+
+/// A cloneable IPC client for catalog operations on the managed child server.
+#[derive(Clone, Debug)]
+pub struct ServerClient {
+    socket_path: PathBuf,
+    server_pid: u32,
+}
+
+#[derive(Default)]
+struct LibraryService {
+    selected_roots: Vec<PathBuf>,
+    catalog: Catalog,
+}
+
+impl LibraryService {
+    fn handle(&mut self, request: Message) -> Message {
+        match request {
+            Message::AddLibraryRoot(path) => {
+                let path = absolute_path(&path);
+                if !self.selected_roots.contains(&path) {
+                    self.selected_roots.push(path);
+                }
+                self.state_message()
+            }
+            Message::RemoveLibraryRoot(path) => {
+                let path = absolute_path(&path);
+                self.selected_roots.retain(|root| root != &path);
+                self.state_message()
+            }
+            Message::GetLibraryState => self.state_message(),
+            Message::GetCatalogPage { offset, limit } => {
+                if limit == 0 || limit > MAX_CATALOG_PAGE_SIZE {
+                    return Message::LibraryOperationFailed(format!(
+                        "catalog page size must be between 1 and {MAX_CATALOG_PAGE_SIZE}"
+                    ));
+                }
+                let start = offset.min(self.catalog.entries.len());
+                let end = start.saturating_add(limit).min(self.catalog.entries.len());
+                Message::CatalogPage(CatalogPage {
+                    entries: self.catalog.entries[start..end].to_vec(),
+                    next_offset: (end < self.catalog.entries.len()).then_some(end),
+                })
+            }
+            Message::ScanLibrary => {
+                let result = scan_library(&self.catalog, &self.selected_roots);
+                self.catalog = result.catalog;
+                let active_entries = self
+                    .catalog
+                    .entries
+                    .iter()
+                    .filter(|entry| entry.active)
+                    .count();
+                let inactive_entries = self.catalog.entries.len() - active_entries;
+                Message::ScanSummary(ScanSummary {
+                    incomplete_paths: result.incomplete_paths,
+                    media_errors: result.media_errors,
+                    active_entries,
+                    inactive_entries,
+                })
+            }
+            _ => Message::LibraryOperationFailed("unsupported library operation".to_owned()),
+        }
+    }
+
+    fn state_message(&self) -> Message {
+        Message::LibraryState(LibraryState {
+            selected_roots: self.selected_roots.clone(),
+            catalog_entries: self.catalog.entries.len(),
+        })
+    }
 }
 
 /// Owns the private activation socket for the one running desktop client.
@@ -237,6 +327,39 @@ impl ServerProcess {
         Ok(self.child.try_wait()?.is_none())
     }
 
+    /// Returns an IPC client tied to this child server's process identity.
+    pub fn client(&self) -> ServerClient {
+        ServerClient {
+            socket_path: self.socket_path.clone(),
+            server_pid: self.child.id(),
+        }
+    }
+
+    /// Adds a selected root without scanning it.
+    pub fn add_library_root(&self, path: &Path) -> io::Result<LibraryState> {
+        self.client().add_library_root(path)
+    }
+
+    /// Removes a selected root; entries are reconciled on the next explicit scan.
+    pub fn remove_library_root(&self, path: &Path) -> io::Result<LibraryState> {
+        self.client().remove_library_root(path)
+    }
+
+    /// Runs one explicit scan of the selected roots.
+    pub fn scan_library(&self) -> io::Result<ScanSummary> {
+        self.client().scan_library()
+    }
+
+    /// Returns the current root selection and the number of catalog entries.
+    pub fn library_state(&self) -> io::Result<LibraryState> {
+        self.client().library_state()
+    }
+
+    /// Reads one bounded page of catalog entries, including inactive records.
+    pub fn catalog_page(&self, offset: usize, limit: usize) -> io::Result<CatalogPage> {
+        self.client().catalog_page(offset, limit)
+    }
+
     fn connect_to_child(&self) -> io::Result<UnixStream> {
         let stream = connect(&self.socket_path)?;
         if peer_pid(&stream)? != self.child.id() {
@@ -264,6 +387,66 @@ impl ServerProcess {
             }
             thread::sleep(Duration::from_millis(10));
         }
+    }
+}
+
+impl ServerClient {
+    pub fn add_library_root(&self, path: &Path) -> io::Result<LibraryState> {
+        expect_library_state(self.request(Message::AddLibraryRoot(path.to_path_buf()))?)
+    }
+
+    pub fn remove_library_root(&self, path: &Path) -> io::Result<LibraryState> {
+        expect_library_state(self.request(Message::RemoveLibraryRoot(path.to_path_buf()))?)
+    }
+
+    pub fn scan_library(&self) -> io::Result<ScanSummary> {
+        match self.request(Message::ScanLibrary)? {
+            Message::ScanSummary(summary) => Ok(summary),
+            response => unexpected_library_response(response),
+        }
+    }
+
+    pub fn library_state(&self) -> io::Result<LibraryState> {
+        expect_library_state(self.request(Message::GetLibraryState)?)
+    }
+
+    pub fn catalog_page(&self, offset: usize, limit: usize) -> io::Result<CatalogPage> {
+        match self.request(Message::GetCatalogPage { offset, limit })? {
+            Message::CatalogPage(page) => Ok(page),
+            response => unexpected_library_response(response),
+        }
+    }
+
+    fn request(&self, request: Message) -> io::Result<Message> {
+        let mut stream = UnixStream::connect(&self.socket_path)?;
+        validate_peer(&stream)?;
+        if peer_pid(&stream)? != self.server_pid {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "server socket is no longer owned by the managed child",
+            ));
+        }
+        set_io_timeout(&stream, LIBRARY_REQUEST_TIMEOUT)?;
+        write_message(&mut stream, &request)
+            .map_err(|error| io::Error::other(error.to_string()))?;
+        read_message(&mut stream).map_err(|error| io::Error::other(error.to_string()))
+    }
+}
+
+fn expect_library_state(response: Message) -> io::Result<LibraryState> {
+    match response {
+        Message::LibraryState(state) => Ok(state),
+        response => unexpected_library_response(response),
+    }
+}
+
+fn unexpected_library_response<T>(response: Message) -> io::Result<T> {
+    match response {
+        Message::LibraryOperationFailed(message) => Err(io::Error::other(message)),
+        other => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("server returned an unexpected library response: {other:?}"),
+        )),
     }
 }
 
@@ -325,6 +508,47 @@ fn set_io_timeout(stream: &UnixStream, timeout: Duration) -> io::Result<()> {
     let timeout = timeout.max(Duration::from_millis(1));
     stream.set_read_timeout(Some(timeout))?;
     stream.set_write_timeout(Some(timeout))
+}
+
+fn write_server_response(stream: &mut UnixStream, response: &Message) -> io::Result<()> {
+    match write_message(stream, response) {
+        Ok(()) => Ok(()),
+        Err(ProtocolError::FrameTooLarge { .. }) => write_message(
+            stream,
+            &Message::LibraryOperationFailed(
+                "server response exceeded the IPC frame limit; request a smaller catalog page"
+                    .to_owned(),
+            ),
+        )
+        .map_err(protocol_error_to_io),
+        Err(error) => Err(protocol_error_to_io(error)),
+    }
+}
+
+fn protocol_error_to_io(error: ProtocolError) -> io::Error {
+    match error {
+        ProtocolError::Io(error) => error,
+        other => io::Error::other(other.to_string()),
+    }
+}
+
+fn client_disconnected(error: &io::Error) -> bool {
+    matches!(
+        error.kind(),
+        io::ErrorKind::BrokenPipe
+            | io::ErrorKind::ConnectionAborted
+            | io::ErrorKind::ConnectionReset
+    )
+}
+
+fn absolute_path(path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .unwrap_or_else(|_| PathBuf::from("/"))
+            .join(path)
+    }
 }
 
 struct SocketPathCleanup(PathBuf);
