@@ -734,22 +734,12 @@ impl PlaybackUi {
                     .iter()
                     .find(|entry| &entry.path == path)
                     .map(|entry| {
-                        let title = entry
-                            .metadata
-                            .title
-                            .as_ref()
-                            .map(|title| title.value.as_str())
-                            .unwrap_or("(No title tag)");
-                        let artists = if entry.metadata.artists.is_empty() {
+                        let view = present_catalog_entry(entry);
+                        let title = view.title.as_deref().unwrap_or("(No title tag)");
+                        let artists = if view.artists.is_empty() {
                             "(No artist tag)".to_owned()
                         } else {
-                            entry
-                                .metadata
-                                .artists
-                                .iter()
-                                .map(|artist| artist.value.as_str())
-                                .collect::<Vec<_>>()
-                                .join(", ")
+                            view.artists.join(", ")
                         };
                         format!("{artists} — {title}")
                     })

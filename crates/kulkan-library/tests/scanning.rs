@@ -256,8 +256,14 @@ fn a_decodable_flac_without_declared_duration_gets_a_cached_duration() {
         .expect("GStreamer derives duration from the decodable frames");
     assert!(duration > std::time::Duration::ZERO);
 
-    let second_scan = scan_library(&first_scan.catalog, std::slice::from_ref(&root));
-    assert_eq!(second_scan.catalog.entries[0].duration, Some(duration));
+    let cached_duration = std::time::Duration::from_secs(42);
+    let mut cached_catalog = first_scan.catalog.clone();
+    cached_catalog.entries[0].duration = Some(cached_duration);
+    let second_scan = scan_library(&cached_catalog, std::slice::from_ref(&root));
+    assert_eq!(
+        second_scan.catalog.entries[0].duration,
+        Some(cached_duration)
+    );
 }
 
 #[test]

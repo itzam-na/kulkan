@@ -277,6 +277,22 @@ pub fn scan_library(previous: &Catalog, roots: &[PathBuf]) -> ScanResult {
                         None
                     }
                 });
+                let duration =
+                    duration.or_else(|| matching_path.and_then(|index| entries[index].duration));
+                let duration = match duration {
+                    Some(duration) => Some(duration),
+                    None => match derive_duration(&path) {
+                        Ok(duration) => Some(duration),
+                        Err(message) => {
+                            incomplete_paths.insert(path.clone());
+                            media_errors.push(MediaError {
+                                path: path.clone(),
+                                message,
+                            });
+                            continue;
+                        }
+                    },
+                };
 
                 if let Some(index) = matching_path {
                     let entry = &mut entries[index];
@@ -420,11 +436,7 @@ fn read_metadata(
     let tags = preferred_tags(&tagged_file, &extension);
     let metadata = metadata_from_tags(&tags, &extension);
     let duration = tagged_file.properties().duration();
-    let duration = if duration.is_zero() {
-        Some(derive_duration(path)?)
-    } else {
-        Some(duration)
-    };
+    let duration = (!duration.is_zero()).then_some(duration);
     let content_fingerprint = content_fingerprint(path, &extension)?;
     Ok((metadata, duration, content_fingerprint))
 }
