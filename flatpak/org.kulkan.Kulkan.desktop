@@ -1,0 +1,9 @@
+[Desktop Entry]
+Name=Kulkán
+Comment=Local audio player
+Exec=kulkan
+Icon=org.kulkan.Kulkan
+Terminal=false
+Type=Application
+Categories=AudioVideo;Audio;Player;
+StartupNotify=true
