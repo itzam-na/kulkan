@@ -151,7 +151,7 @@ impl PlaybackService {
         Ok(self.snapshot.clone())
     }
 
-    fn state(&mut self) -> PlaybackSnapshot {
+    pub(super) fn state(&mut self) -> PlaybackSnapshot {
         if self.pipeline.is_none() {
             return self.snapshot.clone();
         }
@@ -189,6 +189,17 @@ impl PlaybackService {
             self.stop_pipeline();
         }
         snapshot
+    }
+
+    pub(super) fn report_queue_failure(&mut self, error: String) {
+        self.stop_pipeline();
+        self.snapshot = PlaybackSnapshot {
+            track: None,
+            status: PlaybackStatus::Failed,
+            position_ms: 0,
+            duration_ms: None,
+            error: Some(error),
+        };
     }
 
     fn active_pipeline(&self) -> Result<&gst::Element, String> {

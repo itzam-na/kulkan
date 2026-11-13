@@ -41,6 +41,46 @@ pub enum Message {
     GetPlaybackState,
     PlaybackState(PlaybackSnapshot),
     PlaybackOperationFailed(String),
+    AppendQueue(Vec<PathBuf>),
+    GetQueueState,
+    PlayQueueEntry(u64),
+    SkipQueueEntry,
+    ReorderQueueEntry { entry_id: u64, position: usize },
+    RemoveQueueEntry(u64),
+    ClearQueue,
+    SetRepeatMode(RepeatMode),
+    SetShuffle(bool),
+    QueueState(QueueSnapshot),
+    QueueOperationFailed(String),
+}
+
+/// One occurrence of a Track in the listener-managed Queue.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct QueueEntry {
+    /// Identifies this occurrence, even when another entry has the same Track path.
+    pub id: u64,
+    pub track: PathBuf,
+    /// A failed entry remains in the Queue but is skipped in later cycles until retried.
+    pub failed: bool,
+}
+
+/// The repeat behavior for the listener-managed Queue.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub enum RepeatMode {
+    #[default]
+    Off,
+    One,
+    All,
+}
+
+/// Listener-visible queue, ordering settings, and current playback state.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct QueueSnapshot {
+    pub entries: Vec<QueueEntry>,
+    pub current_entry_id: Option<u64>,
+    pub repeat_mode: RepeatMode,
+    pub shuffle: bool,
+    pub playback: PlaybackSnapshot,
 }
 
 /// Current transport state reported by the child server's GStreamer pipeline.

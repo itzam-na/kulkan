@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -12,8 +12,8 @@ use gtk::glib;
 use gtk::prelude::*;
 use kulkan_library::{CatalogPage, LibraryEntry, LibraryState, ScanSummary, present_catalog_entry};
 use kulkan_runtime::{
-    ClientInstance, PlaybackSnapshot, PlaybackStatus, ServerClient, ServerProcess,
-    activate_existing_client,
+    ClientInstance, PlaybackSnapshot, PlaybackStatus, QueueEntry, QueueSnapshot, RepeatMode,
+    ServerClient, ServerProcess, activate_existing_client,
 };
 
 const APPLICATION_ID: &str = "org.kulkan.Kulkan";
@@ -233,15 +233,60 @@ fn build_main_window(application: &gtk::Application, server_state: Rc<RefCell<Se
     main_content.append(&playback_controls);
 
     let queue_placeholder = gtk::Box::new(gtk::Orientation::Vertical, 8);
-    queue_placeholder.set_size_request(220, -1);
+    queue_placeholder.set_size_request(260, -1);
     let queue_title = gtk::Label::new(Some("Queue"));
     queue_title.add_css_class("title-2");
     queue_title.set_halign(gtk::Align::Start);
     queue_placeholder.append(&queue_title);
-    let queue_status = gtk::Label::new(Some("Select tracks from your library after a scan."));
-    queue_status.set_wrap(true);
-    queue_status.set_halign(gtk::Align::Start);
-    queue_placeholder.append(&queue_status);
+    let queue_list = gtk::ListBox::new();
+    queue_list.set_selection_mode(gtk::SelectionMode::Single);
+    let queue_scroll = gtk::ScrolledWindow::builder()
+        .child(&queue_list)
+        .vexpand(true)
+        .build();
+    queue_placeholder.append(&queue_scroll);
+    let queue_repeat = gtk::DropDown::from_strings(&["Repeat Off", "Repeat One", "Repeat All"]);
+    queue_placeholder.append(&queue_repeat);
+    let queue_shuffle = gtk::CheckButton::with_label("Shuffle");
+    queue_placeholder.append(&queue_shuffle);
+    let queue_actions = gtk::Grid::new();
+    queue_actions.set_column_spacing(6);
+    queue_actions.set_row_spacing(6);
+    let add_selected = gtk::Button::with_label("Add Selected");
+    let add_all = gtk::Button::with_label("Add All Tracks");
+    let play_queue_entry = gtk::Button::with_label("Play Queue Entry");
+    let skip_queue_entry = gtk::Button::with_label("Next");
+    let move_queue_up = gtk::Button::with_label("Move Up");
+    let move_queue_down = gtk::Button::with_label("Move Down");
+    let remove_queue_entry = gtk::Button::with_label("Remove");
+    let clear_queue = gtk::Button::with_label("Clear Queue");
+    for button in [
+        &add_selected,
+        &add_all,
+        &play_queue_entry,
+        &skip_queue_entry,
+        &move_queue_up,
+        &move_queue_down,
+        &remove_queue_entry,
+        &clear_queue,
+    ] {
+        button.set_sensitive(false);
+    }
+    queue_repeat.set_sensitive(false);
+    queue_shuffle.set_sensitive(false);
+    for (column, row, button) in [
+        (0, 0, &add_selected),
+        (1, 0, &add_all),
+        (0, 1, &play_queue_entry),
+        (1, 1, &skip_queue_entry),
+        (0, 2, &move_queue_up),
+        (1, 2, &move_queue_down),
+        (0, 3, &remove_queue_entry),
+        (1, 3, &clear_queue),
+    ] {
+        queue_actions.attach(button, column, row, 1, 1);
+    }
+    queue_placeholder.append(&queue_actions);
 
     content.append(&library_sidebar);
     content.append(&main_content);
@@ -260,9 +305,27 @@ fn build_main_window(application: &gtk::Application, server_state: Rc<RefCell<Se
 
     let roots_model = Rc::new(RefCell::new(Vec::<PathBuf>::new()));
     let catalog_entries = Rc::new(RefCell::new(Vec::<LibraryEntry>::new()));
+    let queue_entries = Rc::new(RefCell::new(Vec::<QueueEntry>::new()));
+    let displayed_queue_current = Rc::new(Cell::new(None));
+    let syncing_queue_controls = Rc::new(Cell::new(false));
     let poll_playback = Arc::new(AtomicBool::new(false));
     let (sender, receiver) = mpsc::channel();
     let catalog_paging = Rc::new(RefCell::new(None::<(ServerClient, usize)>));
+    let queue_ui = QueueUi {
+        list: queue_list.clone(),
+        entries: Rc::clone(&queue_entries),
+        current_entry_id: Rc::clone(&displayed_queue_current),
+        syncing_controls: Rc::clone(&syncing_queue_controls),
+        server_available: Rc::new(Cell::new(false)),
+        repeat: queue_repeat.clone(),
+        shuffle: queue_shuffle.clone(),
+        play: play_queue_entry.clone(),
+        skip: skip_queue_entry.clone(),
+        move_up: move_queue_up.clone(),
+        move_down: move_queue_down.clone(),
+        remove: remove_queue_entry.clone(),
+        clear: clear_queue.clone(),
+    };
     install_library_events(
         receiver,
         LibraryUi {
@@ -274,6 +337,7 @@ fn build_main_window(application: &gtk::Application, server_state: Rc<RefCell<Se
             status: status.clone(),
             scan_button: scan_button.clone(),
             load_more: load_more.clone(),
+            queue: queue_ui.clone(),
             playback: PlaybackUi {
                 current_track: current_track.clone(),
                 position: playback_position.clone(),
@@ -286,14 +350,25 @@ fn build_main_window(application: &gtk::Application, server_state: Rc<RefCell<Se
             poll_playback: Arc::clone(&poll_playback),
         },
     );
+    let selection_queue_ui = queue_ui.clone();
+    queue_list.connect_row_selected(move |_, _| {
+        selection_queue_ui.update_actions();
+    });
     let selection_model = Rc::clone(&catalog_entries);
     let play_for_selection = play_selected.clone();
+    let add_for_selection = add_selected.clone();
     let selection_server = Rc::clone(&server_state);
-    catalog_list.connect_row_selected(move |_, row| {
-        let can_play = row
-            .and_then(|row| selection_model.borrow().get(row.index() as usize).cloned())
-            .is_some_and(|entry| entry.active && selection_server.borrow().client().is_some());
-        play_for_selection.set_sensitive(can_play);
+    catalog_list.set_selection_mode(gtk::SelectionMode::Multiple);
+    catalog_list.connect_row_selected(move |list, _| {
+        let can_queue = list.selected_rows().iter().any(|row| {
+            selection_model
+                .borrow()
+                .get(row.index() as usize)
+                .is_some_and(|entry| entry.active)
+        });
+        let can_queue = can_queue && selection_server.borrow().client().is_some();
+        play_for_selection.set_sensitive(can_queue);
+        add_for_selection.set_sensitive(can_queue);
     });
 
     let play_state = Rc::clone(&server_state);
@@ -302,21 +377,52 @@ fn build_main_window(application: &gtk::Application, server_state: Rc<RefCell<Se
     let play_status = status.clone();
     let play_sender = sender.clone();
     play_selected.connect_clicked(move |_| {
-        let Some(row) = play_list.selected_row() else {
+        let tracks = selected_active_tracks(&play_list, &play_model);
+        if tracks.is_empty() {
             return;
-        };
-        let Some(entry) = play_model.borrow().get(row.index() as usize).cloned() else {
-            return;
-        };
+        }
         let Some(client) = play_state.borrow().client() else {
             play_status.set_text("Server unavailable. Select Retry.");
             return;
         };
-        play_status.set_text("Starting playback…");
+        play_status.set_text("Adding selected tracks to the Queue…");
         send_playback_operation(
             client,
-            PlaybackRequest::Play(entry.path),
+            PlaybackRequest::QueueAndPlay(tracks),
             play_sender.clone(),
+        );
+    });
+
+    let add_state = Rc::clone(&server_state);
+    let add_model = Rc::clone(&catalog_entries);
+    let add_list = catalog_list.clone();
+    let add_status = status.clone();
+    let add_sender = sender.clone();
+    add_selected.connect_clicked(move |_| {
+        let tracks = selected_active_tracks(&add_list, &add_model);
+        if tracks.is_empty() {
+            return;
+        }
+        let Some(client) = add_state.borrow().client() else {
+            add_status.set_text("Server unavailable. Select Retry.");
+            return;
+        };
+        send_playback_operation(client, PlaybackRequest::Append(tracks), add_sender.clone());
+    });
+
+    let all_state = Rc::clone(&server_state);
+    let all_status = status.clone();
+    let all_sender = sender.clone();
+    add_all.connect_clicked(move |_| {
+        let Some(client) = all_state.borrow().client() else {
+            all_status.set_text("Server unavailable. Select Retry.");
+            return;
+        };
+        all_status.set_text("Adding all active tracks to the Queue…");
+        send_playback_operation(
+            client,
+            PlaybackRequest::AppendAllCatalog,
+            all_sender.clone(),
         );
     });
 
@@ -366,6 +472,147 @@ fn build_main_window(application: &gtk::Application, server_state: Rc<RefCell<Se
             send_playback_operation(client, PlaybackRequest::Stop, stop_sender.clone());
         } else {
             stop_status.set_text("Server unavailable. Select Retry.");
+        }
+    });
+
+    let play_queue_state = Rc::clone(&server_state);
+    let play_queue_model = Rc::clone(&queue_entries);
+    let play_queue_list = queue_list.clone();
+    let play_queue_sender = sender.clone();
+    play_queue_entry.connect_clicked(move |_| {
+        let Some(row) = play_queue_list.selected_row() else {
+            return;
+        };
+        let Some(entry) = play_queue_model.borrow().get(row.index() as usize).cloned() else {
+            return;
+        };
+        if let Some(client) = play_queue_state.borrow().client() {
+            send_playback_operation(
+                client,
+                PlaybackRequest::PlayQueueEntry(entry.id),
+                play_queue_sender.clone(),
+            );
+        }
+    });
+
+    let skip_state = Rc::clone(&server_state);
+    let skip_sender = sender.clone();
+    skip_queue_entry.connect_clicked(move |_| {
+        if let Some(client) = skip_state.borrow().client() {
+            send_playback_operation(client, PlaybackRequest::Skip, skip_sender.clone());
+        }
+    });
+
+    let reorder_state = Rc::clone(&server_state);
+    let reorder_model = Rc::clone(&queue_entries);
+    let reorder_list = queue_list.clone();
+    let reorder_sender = sender.clone();
+    move_queue_up.connect_clicked(move |_| {
+        let Some(row) = reorder_list.selected_row() else {
+            return;
+        };
+        let position = row.index() as usize;
+        if position == 0 {
+            return;
+        }
+        let Some(entry) = reorder_model.borrow().get(position).cloned() else {
+            return;
+        };
+        if let Some(client) = reorder_state.borrow().client() {
+            send_playback_operation(
+                client,
+                PlaybackRequest::Reorder(entry.id, position - 1),
+                reorder_sender.clone(),
+            );
+        }
+    });
+
+    let reorder_state = Rc::clone(&server_state);
+    let reorder_model = Rc::clone(&queue_entries);
+    let reorder_list = queue_list.clone();
+    let reorder_sender = sender.clone();
+    move_queue_down.connect_clicked(move |_| {
+        let Some(row) = reorder_list.selected_row() else {
+            return;
+        };
+        let position = row.index() as usize;
+        let Some(entry) = reorder_model.borrow().get(position).cloned() else {
+            return;
+        };
+        if position + 1 >= reorder_model.borrow().len() {
+            return;
+        }
+        if let Some(client) = reorder_state.borrow().client() {
+            send_playback_operation(
+                client,
+                PlaybackRequest::Reorder(entry.id, position + 1),
+                reorder_sender.clone(),
+            );
+        }
+    });
+
+    let remove_queue_state = Rc::clone(&server_state);
+    let remove_queue_model = Rc::clone(&queue_entries);
+    let remove_queue_list = queue_list.clone();
+    let remove_queue_sender = sender.clone();
+    remove_queue_entry.connect_clicked(move |_| {
+        let Some(row) = remove_queue_list.selected_row() else {
+            return;
+        };
+        let Some(entry) = remove_queue_model
+            .borrow()
+            .get(row.index() as usize)
+            .cloned()
+        else {
+            return;
+        };
+        if let Some(client) = remove_queue_state.borrow().client() {
+            send_playback_operation(
+                client,
+                PlaybackRequest::Remove(entry.id),
+                remove_queue_sender.clone(),
+            );
+        }
+    });
+
+    let clear_queue_state = Rc::clone(&server_state);
+    let clear_queue_sender = sender.clone();
+    clear_queue.connect_clicked(move |_| {
+        if let Some(client) = clear_queue_state.borrow().client() {
+            send_playback_operation(client, PlaybackRequest::Clear, clear_queue_sender.clone());
+        }
+    });
+
+    let repeat_state = Rc::clone(&server_state);
+    let repeat_syncing = Rc::clone(&syncing_queue_controls);
+    let repeat_sender = sender.clone();
+    queue_repeat.connect_selected_notify(move |repeat| {
+        if repeat_syncing.get() {
+            return;
+        }
+        let mode = match repeat.selected() {
+            1 => RepeatMode::One,
+            2 => RepeatMode::All,
+            _ => RepeatMode::Off,
+        };
+        if let Some(client) = repeat_state.borrow().client() {
+            send_playback_operation(client, PlaybackRequest::Repeat(mode), repeat_sender.clone());
+        }
+    });
+
+    let shuffle_state = Rc::clone(&server_state);
+    let shuffle_syncing = Rc::clone(&syncing_queue_controls);
+    let shuffle_sender = sender.clone();
+    queue_shuffle.connect_toggled(move |shuffle| {
+        if shuffle_syncing.get() {
+            return;
+        }
+        if let Some(client) = shuffle_state.borrow().client() {
+            send_playback_operation(
+                client,
+                PlaybackRequest::Shuffle(shuffle.is_active()),
+                shuffle_sender.clone(),
+            );
         }
     });
 
@@ -477,6 +724,10 @@ fn build_main_window(application: &gtk::Application, server_state: Rc<RefCell<Se
         });
     });
 
+    let startup_add_all = add_all.clone();
+    let startup_repeat = queue_repeat.clone();
+    let startup_shuffle = queue_shuffle.clone();
+    let startup_queue_ui = queue_ui.clone();
     let startup_result = { server_state.borrow_mut().start() };
     match startup_result {
         Ok(()) => {
@@ -489,12 +740,20 @@ fn build_main_window(application: &gtk::Application, server_state: Rc<RefCell<Se
                 roots_list.selected_row().is_some(),
                 true,
             );
+            startup_add_all.set_sensitive(true);
+            startup_repeat.set_sensitive(true);
+            startup_shuffle.set_sensitive(true);
+            startup_queue_ui.set_available(true);
             if let Some(client) = server_state.borrow().client() {
                 let sender = sender.clone();
                 thread::spawn(move || {
                     let _ = sender.send(UiEvent::Roots(
                         client.library_state().map_err(|error| error.to_string()),
                     ));
+                    let _ = sender.send(UiEvent::Playback {
+                        state: client.queue_state().map_err(|error| error.to_string()),
+                        command_error: None,
+                    });
                 });
             }
         }
@@ -502,6 +761,10 @@ fn build_main_window(application: &gtk::Application, server_state: Rc<RefCell<Se
             status.set_text(&format!("Server unavailable: {error}"));
             retry.set_sensitive(true);
             set_server_controls_sensitive(&add_root, &remove_root, &scan_button, false, false);
+            startup_add_all.set_sensitive(false);
+            startup_repeat.set_sensitive(false);
+            startup_shuffle.set_sensitive(false);
+            startup_queue_ui.set_available(false);
         }
     }
 
@@ -512,6 +775,10 @@ fn build_main_window(application: &gtk::Application, server_state: Rc<RefCell<Se
     let retry_add = add_root.clone();
     let retry_remove = remove_root.clone();
     let retry_scan = scan_button.clone();
+    let retry_add_all = add_all.clone();
+    let retry_repeat = queue_repeat.clone();
+    let retry_shuffle = queue_shuffle.clone();
+    let retry_queue_ui = queue_ui.clone();
     retry.connect_clicked(move |_| {
         let retry_result = { retry_state.borrow_mut().start() };
         match retry_result {
@@ -525,12 +792,20 @@ fn build_main_window(application: &gtk::Application, server_state: Rc<RefCell<Se
                     roots_list.selected_row().is_some(),
                     true,
                 );
+                retry_add_all.set_sensitive(true);
+                retry_repeat.set_sensitive(true);
+                retry_shuffle.set_sensitive(true);
+                retry_queue_ui.set_available(true);
                 if let Some(client) = retry_state.borrow().client() {
                     let sender = retry_sender.clone();
                     thread::spawn(move || {
                         let _ = sender.send(UiEvent::Roots(
                             client.library_state().map_err(|error| error.to_string()),
                         ));
+                        let _ = sender.send(UiEvent::Playback {
+                            state: client.queue_state().map_err(|error| error.to_string()),
+                            command_error: None,
+                        });
                     });
                 }
             }
@@ -538,6 +813,10 @@ fn build_main_window(application: &gtk::Application, server_state: Rc<RefCell<Se
                 retry_status.set_text(&format!("Server unavailable: {error}"));
                 retry_button.set_sensitive(true);
                 set_server_controls_sensitive(&retry_add, &retry_remove, &retry_scan, false, false);
+                retry_add_all.set_sensitive(false);
+                retry_repeat.set_sensitive(false);
+                retry_shuffle.set_sensitive(false);
+                retry_queue_ui.set_available(false);
             }
         }
     });
@@ -552,13 +831,22 @@ enum UiEvent {
     Catalog(Result<(ScanSummary, CatalogPage, ServerClient), String>),
     CatalogPage(Result<CatalogPage, String>),
     Playback {
-        state: Result<PlaybackSnapshot, String>,
+        state: Result<QueueSnapshot, String>,
         command_error: Option<String>,
     },
 }
 
 enum PlaybackRequest {
-    Play(PathBuf),
+    QueueAndPlay(Vec<PathBuf>),
+    Append(Vec<PathBuf>),
+    AppendAllCatalog,
+    PlayQueueEntry(u64),
+    Skip,
+    Reorder(u64, usize),
+    Remove(u64),
+    Clear,
+    Repeat(RepeatMode),
+    Shuffle(bool),
     Pause,
     Resume,
     Seek(u64),
@@ -575,8 +863,26 @@ struct LibraryUi {
     status: gtk::Label,
     scan_button: gtk::Button,
     load_more: gtk::Button,
+    queue: QueueUi,
     playback: PlaybackUi,
     poll_playback: Arc<AtomicBool>,
+}
+
+#[derive(Clone)]
+struct QueueUi {
+    list: gtk::ListBox,
+    entries: Rc<RefCell<Vec<QueueEntry>>>,
+    current_entry_id: Rc<Cell<Option<u64>>>,
+    syncing_controls: Rc<Cell<bool>>,
+    server_available: Rc<Cell<bool>>,
+    repeat: gtk::DropDown,
+    shuffle: gtk::CheckButton,
+    play: gtk::Button,
+    skip: gtk::Button,
+    move_up: gtk::Button,
+    move_down: gtk::Button,
+    remove: gtk::Button,
+    clear: gtk::Button,
 }
 
 struct PlaybackUi {
@@ -599,6 +905,7 @@ fn install_library_events(receiver: Receiver<UiEvent>, ui: LibraryUi) {
         status,
         scan_button,
         load_more,
+        queue,
         playback,
         poll_playback,
     } = ui;
@@ -647,21 +954,17 @@ fn install_library_events(receiver: Receiver<UiEvent>, ui: LibraryUi) {
                 } => {
                     match state {
                         Ok(snapshot) => {
-                            playback.apply(&snapshot, &catalog_entries.borrow(), &status);
+                            playback.apply(&snapshot.playback, &catalog_entries.borrow(), &status);
+                            queue.apply(&snapshot, &catalog_entries.borrow());
                             poll_playback.store(
                                 matches!(
-                                    snapshot.status,
+                                    snapshot.playback.status,
                                     PlaybackStatus::Playing | PlaybackStatus::Paused
                                 ),
                                 Ordering::Relaxed,
                             );
                             playback.play_selected.set_sensitive(
-                                catalog_list
-                                    .selected_row()
-                                    .and_then(|row| {
-                                        catalog_entries.borrow().get(row.index() as usize).cloned()
-                                    })
-                                    .is_some_and(|entry| entry.active),
+                                !selected_active_tracks(&catalog_list, &catalog_entries).is_empty(),
                             );
                         }
                         Err(error) => {
@@ -672,6 +975,7 @@ fn install_library_events(receiver: Receiver<UiEvent>, ui: LibraryUi) {
                             playback.resume.set_sensitive(false);
                             playback.seek.set_sensitive(false);
                             playback.stop.set_sensitive(false);
+                            queue.set_available(false);
                         }
                     }
                     if let Some(error) = command_error {
@@ -692,7 +996,7 @@ fn send_playback_operation(
     thread::spawn(move || {
         let (state, command_error) = match perform_playback_request(&client, request) {
             Ok(snapshot) => (Ok(snapshot), None),
-            Err(error) => match client.playback_state() {
+            Err(error) => match client.queue_state() {
                 Ok(snapshot) => (Ok(snapshot), Some(error.to_string())),
                 Err(state_error) => (
                     Err(format!(
@@ -712,14 +1016,63 @@ fn send_playback_operation(
 fn perform_playback_request(
     client: &ServerClient,
     request: PlaybackRequest,
-) -> std::io::Result<PlaybackSnapshot> {
+) -> std::io::Result<QueueSnapshot> {
     match request {
-        PlaybackRequest::Play(path) => client.play_track(&path),
-        PlaybackRequest::Pause => client.pause_playback(),
-        PlaybackRequest::Resume => client.resume_playback(),
-        PlaybackRequest::Seek(position_ms) => client.seek_playback(position_ms),
-        PlaybackRequest::Stop => client.stop_playback(),
-        PlaybackRequest::State => client.playback_state(),
+        PlaybackRequest::QueueAndPlay(tracks) => {
+            let queue = client.append_to_queue(&tracks)?;
+            let first = queue
+                .entries
+                .get(queue.entries.len().saturating_sub(tracks.len()));
+            match first {
+                Some(entry) => client.play_queue_entry(entry.id),
+                None => Ok(queue),
+            }
+        }
+        PlaybackRequest::Append(tracks) => client.append_to_queue(&tracks),
+        PlaybackRequest::AppendAllCatalog => {
+            let mut offset = 0;
+            let mut tracks = Vec::new();
+            loop {
+                let page = client.catalog_page(offset, 32)?;
+                tracks.extend(
+                    page.entries
+                        .into_iter()
+                        .filter(|entry| entry.active)
+                        .map(|entry| entry.path),
+                );
+                let Some(next_offset) = page.next_offset else {
+                    break;
+                };
+                offset = next_offset;
+            }
+            client.append_to_queue(&tracks)
+        }
+        PlaybackRequest::PlayQueueEntry(entry_id) => client.play_queue_entry(entry_id),
+        PlaybackRequest::Skip => client.skip_queue_entry(),
+        PlaybackRequest::Reorder(entry_id, position) => {
+            client.reorder_queue_entry(entry_id, position)
+        }
+        PlaybackRequest::Remove(entry_id) => client.remove_queue_entry(entry_id),
+        PlaybackRequest::Clear => client.clear_queue(),
+        PlaybackRequest::Repeat(mode) => client.set_repeat_mode(mode),
+        PlaybackRequest::Shuffle(enabled) => client.set_shuffle(enabled),
+        PlaybackRequest::Pause => {
+            client.pause_playback()?;
+            client.queue_state()
+        }
+        PlaybackRequest::Resume => {
+            client.resume_playback()?;
+            client.queue_state()
+        }
+        PlaybackRequest::Seek(position_ms) => {
+            client.seek_playback(position_ms)?;
+            client.queue_state()
+        }
+        PlaybackRequest::Stop => {
+            client.stop_playback()?;
+            client.queue_state()
+        }
+        PlaybackRequest::State => client.queue_state(),
     }
 }
 
@@ -826,6 +1179,153 @@ impl PlaybackUi {
             .set_sensitive(active || snapshot.status == PlaybackStatus::Ended);
         self.position
             .set_sensitive(active && snapshot.duration_ms.is_some());
+    }
+}
+
+impl QueueUi {
+    fn apply(&self, snapshot: &QueueSnapshot, catalog_entries: &[LibraryEntry]) {
+        let entries_changed = self.entries.borrow().as_slice() != snapshot.entries.as_slice();
+        let current_changed = self.current_entry_id.get() != snapshot.current_entry_id;
+        if entries_changed || current_changed {
+            let selected_entry_id = self
+                .list
+                .selected_row()
+                .and_then(|row| self.entries.borrow().get(row.index() as usize).cloned())
+                .map(|entry| entry.id);
+            replace_queue_rows(
+                &self.list,
+                &snapshot.entries,
+                snapshot.current_entry_id,
+                catalog_entries,
+            );
+            *self.entries.borrow_mut() = snapshot.entries.clone();
+            self.current_entry_id.set(snapshot.current_entry_id);
+            let row_to_select =
+                selected_entry_id
+                    .or(snapshot.current_entry_id)
+                    .and_then(|entry_id| {
+                        snapshot
+                            .entries
+                            .iter()
+                            .position(|entry| entry.id == entry_id)
+                    });
+            if let Some(position) = row_to_select {
+                self.list
+                    .select_row(self.list.row_at_index(position as i32).as_ref());
+            }
+        }
+
+        self.syncing_controls.set(true);
+        self.repeat.set_selected(match snapshot.repeat_mode {
+            RepeatMode::Off => 0,
+            RepeatMode::One => 1,
+            RepeatMode::All => 2,
+        });
+        self.shuffle.set_active(snapshot.shuffle);
+        self.syncing_controls.set(false);
+
+        self.update_actions();
+    }
+
+    fn set_available(&self, available: bool) {
+        self.server_available.set(available);
+        self.repeat.set_sensitive(available);
+        self.shuffle.set_sensitive(available);
+        self.update_actions();
+    }
+
+    fn update_actions(&self) {
+        if !self.server_available.get() {
+            self.play.set_sensitive(false);
+            self.skip.set_sensitive(false);
+            self.move_up.set_sensitive(false);
+            self.move_down.set_sensitive(false);
+            self.remove.set_sensitive(false);
+            self.clear.set_sensitive(false);
+            return;
+        }
+        let selected_position = self.list.selected_row().map(|row| row.index() as usize);
+        let entries = self.entries.borrow();
+        let current_position = self
+            .current_entry_id
+            .get()
+            .and_then(|current_id| entries.iter().position(|entry| entry.id == current_id));
+        let selected_is_upcoming = selected_position
+            .is_some_and(|position| current_position.is_none_or(|current| position > current));
+        self.play.set_sensitive(selected_position.is_some());
+        self.skip
+            .set_sensitive(self.current_entry_id.get().is_some());
+        self.move_up.set_sensitive(
+            selected_is_upcoming
+                && selected_position.is_some_and(|position| {
+                    position > current_position.map_or(0, |current| current + 1)
+                }),
+        );
+        self.move_down.set_sensitive(
+            selected_is_upcoming
+                && selected_position.is_some_and(|position| position + 1 < entries.len()),
+        );
+        self.remove.set_sensitive(selected_position.is_some());
+        self.clear.set_sensitive(!entries.is_empty());
+    }
+}
+
+fn selected_active_tracks(
+    list: &gtk::ListBox,
+    catalog_entries: &Rc<RefCell<Vec<LibraryEntry>>>,
+) -> Vec<PathBuf> {
+    let mut rows = list.selected_rows();
+    rows.sort_by_key(|row| row.index());
+    rows.into_iter()
+        .filter_map(|row| {
+            catalog_entries
+                .borrow()
+                .get(row.index() as usize)
+                .filter(|entry| entry.active)
+                .map(|entry| entry.path.clone())
+        })
+        .collect()
+}
+
+fn replace_queue_rows(
+    list: &gtk::ListBox,
+    entries: &[QueueEntry],
+    current_entry_id: Option<u64>,
+    catalog_entries: &[LibraryEntry],
+) {
+    while let Some(child) = list.first_child() {
+        list.remove(&child);
+    }
+    for entry in entries {
+        let title = catalog_entries
+            .iter()
+            .find(|catalog_entry| catalog_entry.path == entry.track)
+            .map(|catalog_entry| {
+                let view = present_catalog_entry(catalog_entry);
+                let title = view.title.as_deref().unwrap_or("(No title tag)");
+                if view.artists.is_empty() {
+                    title.to_owned()
+                } else {
+                    format!("{} — {title}", view.artists.join(", "))
+                }
+            })
+            .unwrap_or_else(|| entry.track.display().to_string());
+        let marker = match (current_entry_id == Some(entry.id), entry.failed) {
+            (true, true) => "▶ Failed · ",
+            (true, false) => "▶ ",
+            (false, true) => "Failed · ",
+            (false, false) => "",
+        };
+        let label = gtk::Label::new(Some(&format!("{marker}{title}")));
+        label.set_halign(gtk::Align::Start);
+        label.set_wrap(true);
+        label.set_selectable(true);
+        if entry.failed {
+            label.add_css_class("error");
+        }
+        let row = gtk::ListBoxRow::new();
+        row.set_child(Some(&label));
+        list.append(&row);
     }
 }
 

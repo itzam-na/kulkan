@@ -12,10 +12,11 @@ use kulkan_ipc::{
     Message, ProtocolError, bind_private_socket, peer_pid, read_message, validate_peer,
     write_message,
 };
-pub use kulkan_ipc::{PlaybackSnapshot, PlaybackStatus};
+pub use kulkan_ipc::{PlaybackSnapshot, PlaybackStatus, QueueEntry, QueueSnapshot, RepeatMode};
 use kulkan_library::{Catalog, CatalogPage, LibraryState, ScanSummary, scan_library};
 
 mod playback;
+mod queue;
 
 const MAX_CATALOG_PAGE_SIZE: usize = 32;
 const LIBRARY_REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
@@ -33,7 +34,7 @@ pub fn serve_with_audio_sink(socket_path: &Path, audio_sink: Option<&str>) -> io
     let listener = bind_private_socket(socket_path)?;
     let _cleanup = SocketPathCleanup(socket_path.to_path_buf());
     let mut library = LibraryService::default();
-    let mut playback = playback::PlaybackService::new(audio_sink.map(str::to_owned));
+    let mut queue = queue::QueueService::new(audio_sink.map(str::to_owned));
 
     for incoming in listener.incoming() {
         let mut stream = incoming?;
@@ -59,8 +60,8 @@ pub fn serve_with_audio_sink(socket_path: &Path, audio_sink: Option<&str>) -> io
                 return Ok(());
             }
             request => {
-                let response = if playback::PlaybackService::handles(&request) {
-                    playback.handle(request)
+                let response = if queue::QueueService::handles(&request) {
+                    queue.handle(request)
                 } else {
                     library.handle(request)
                 };
@@ -413,6 +414,42 @@ impl ServerProcess {
         self.client().playback_state()
     }
 
+    pub fn append_to_queue(&self, tracks: &[PathBuf]) -> io::Result<QueueSnapshot> {
+        self.client().append_to_queue(tracks)
+    }
+
+    pub fn queue_state(&self) -> io::Result<QueueSnapshot> {
+        self.client().queue_state()
+    }
+
+    pub fn play_queue_entry(&self, entry_id: u64) -> io::Result<QueueSnapshot> {
+        self.client().play_queue_entry(entry_id)
+    }
+
+    pub fn skip_queue_entry(&self) -> io::Result<QueueSnapshot> {
+        self.client().skip_queue_entry()
+    }
+
+    pub fn reorder_queue_entry(&self, entry_id: u64, position: usize) -> io::Result<QueueSnapshot> {
+        self.client().reorder_queue_entry(entry_id, position)
+    }
+
+    pub fn remove_queue_entry(&self, entry_id: u64) -> io::Result<QueueSnapshot> {
+        self.client().remove_queue_entry(entry_id)
+    }
+
+    pub fn clear_queue(&self) -> io::Result<QueueSnapshot> {
+        self.client().clear_queue()
+    }
+
+    pub fn set_repeat_mode(&self, repeat_mode: RepeatMode) -> io::Result<QueueSnapshot> {
+        self.client().set_repeat_mode(repeat_mode)
+    }
+
+    pub fn set_shuffle(&self, enabled: bool) -> io::Result<QueueSnapshot> {
+        self.client().set_shuffle(enabled)
+    }
+
     fn connect_to_child(&self) -> io::Result<UnixStream> {
         let stream = connect(&self.socket_path)?;
         if peer_pid(&stream)? != self.child.id() {
@@ -494,6 +531,42 @@ impl ServerClient {
         expect_playback_state(self.request(Message::GetPlaybackState)?)
     }
 
+    pub fn append_to_queue(&self, tracks: &[PathBuf]) -> io::Result<QueueSnapshot> {
+        expect_queue_state(self.request(Message::AppendQueue(tracks.to_vec()))?)
+    }
+
+    pub fn queue_state(&self) -> io::Result<QueueSnapshot> {
+        expect_queue_state(self.request(Message::GetQueueState)?)
+    }
+
+    pub fn play_queue_entry(&self, entry_id: u64) -> io::Result<QueueSnapshot> {
+        expect_queue_state(self.request(Message::PlayQueueEntry(entry_id))?)
+    }
+
+    pub fn skip_queue_entry(&self) -> io::Result<QueueSnapshot> {
+        expect_queue_state(self.request(Message::SkipQueueEntry)?)
+    }
+
+    pub fn reorder_queue_entry(&self, entry_id: u64, position: usize) -> io::Result<QueueSnapshot> {
+        expect_queue_state(self.request(Message::ReorderQueueEntry { entry_id, position })?)
+    }
+
+    pub fn remove_queue_entry(&self, entry_id: u64) -> io::Result<QueueSnapshot> {
+        expect_queue_state(self.request(Message::RemoveQueueEntry(entry_id))?)
+    }
+
+    pub fn clear_queue(&self) -> io::Result<QueueSnapshot> {
+        expect_queue_state(self.request(Message::ClearQueue)?)
+    }
+
+    pub fn set_repeat_mode(&self, repeat_mode: RepeatMode) -> io::Result<QueueSnapshot> {
+        expect_queue_state(self.request(Message::SetRepeatMode(repeat_mode))?)
+    }
+
+    pub fn set_shuffle(&self, enabled: bool) -> io::Result<QueueSnapshot> {
+        expect_queue_state(self.request(Message::SetShuffle(enabled))?)
+    }
+
     fn request(&self, request: Message) -> io::Result<Message> {
         let mut stream = UnixStream::connect(&self.socket_path)?;
         validate_peer(&stream)?;
@@ -517,6 +590,17 @@ fn expect_playback_state(response: Message) -> io::Result<PlaybackSnapshot> {
         response => Err(io::Error::new(
             io::ErrorKind::InvalidData,
             format!("server returned an unexpected playback response: {response:?}"),
+        )),
+    }
+}
+
+fn expect_queue_state(response: Message) -> io::Result<QueueSnapshot> {
+    match response {
+        Message::QueueState(state) => Ok(state),
+        Message::QueueOperationFailed(message) => Err(io::Error::other(message)),
+        response => Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("server returned an unexpected queue response: {response:?}"),
         )),
     }
 }
