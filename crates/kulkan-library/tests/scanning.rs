@@ -474,6 +474,41 @@ fn a_truncated_ogg_packet_does_not_replace_the_last_known_entry() {
 }
 
 #[test]
+fn a_missing_ogg_end_page_does_not_replace_the_last_known_entry() {
+    let directory = TestDirectory::new();
+    let root = directory.0.join("music");
+    fs::create_dir(&root).unwrap();
+    let track = root.join("track.ogg");
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/metadata.ogg");
+    fs::copy(fixture, &track).unwrap();
+    let mut previous = scan_library(&Catalog::default(), std::slice::from_ref(&root)).catalog;
+    previous.entries[0].play_count = 3;
+    let old_id = previous.entries[0].id;
+
+    let mut bytes = fs::read(&track).unwrap();
+    let last_page = bytes
+        .windows(4)
+        .rposition(|window| window == b"OggS")
+        .unwrap();
+    let lacing_count = bytes[last_page + 26] as usize;
+    let body_size = bytes[last_page + 27..last_page + 27 + lacing_count]
+        .iter()
+        .map(|size| usize::from(*size))
+        .sum::<usize>();
+    assert_eq!(last_page + 27 + lacing_count + body_size, bytes.len());
+    bytes.truncate(last_page);
+    fs::write(&track, bytes).unwrap();
+
+    let result = scan_library(&previous, std::slice::from_ref(&root));
+
+    assert_eq!(result.media_errors.len(), 1);
+    assert_eq!(result.catalog.entries.len(), 1);
+    assert_eq!(result.catalog.entries[0].id, old_id);
+    assert_eq!(result.catalog.entries[0].play_count, 3);
+    assert!(result.catalog.entries[0].active);
+}
+
+#[test]
 fn changed_audio_at_the_same_path_gets_new_identity_and_keeps_old_history_inactive() {
     let directory = TestDirectory::new();
     let root = directory.0.join("music");
@@ -656,6 +691,106 @@ fn identical_audio_at_distinct_paths_remains_two_active_entries() {
     assert_eq!(result.catalog.entries.len(), 2);
     assert!(result.catalog.entries.iter().all(|entry| entry.active));
     assert_ne!(result.catalog.entries[0].id, result.catalog.entries[1].id);
+}
+
+#[test]
+fn an_old_entry_does_not_choose_between_two_new_paths_with_matching_audio() {
+    let directory = TestDirectory::new();
+    let root = directory.0.join("music");
+    fs::create_dir(&root).unwrap();
+    let original = root.join("z-original.wav");
+    write_tagged_pcm_wav(&original);
+    let mut previous = scan_library(&Catalog::default(), std::slice::from_ref(&root)).catalog;
+    previous.entries[0].play_count = 7;
+    let original_id = previous.entries[0].id;
+    fs::remove_file(&original).unwrap();
+    let first_scan = scan_library(&previous, std::slice::from_ref(&root));
+    let first_copy = root.join("a-copy.wav");
+    let second_copy = root.join("b-copy.wav");
+    write_tagged_pcm_wav(&first_copy);
+    fs::copy(&first_copy, &second_copy).unwrap();
+
+    let result = scan_library(&first_scan.catalog, std::slice::from_ref(&root));
+
+    assert_eq!(result.catalog.entries.len(), 3);
+    assert!(
+        result
+            .catalog
+            .entries
+            .iter()
+            .any(|entry| entry.id == original_id && !entry.active && entry.play_count == 7)
+    );
+    for path in [&first_copy, &second_copy] {
+        let entry = result
+            .catalog
+            .entries
+            .iter()
+            .find(|entry| entry.path == *path)
+            .unwrap();
+        assert!(entry.active);
+        assert_eq!(entry.play_count, 0);
+        assert_ne!(entry.id, original_id);
+    }
+}
+
+#[test]
+fn valid_waveformat_extensible_pcm_is_fingerprinted() {
+    let directory = TestDirectory::new();
+    let root = directory.0.join("music");
+    fs::create_dir(&root).unwrap();
+    let track = root.join("extensible.wav");
+    write_tagged_pcm_wav(&track);
+
+    let mut bytes = fs::read(&track).unwrap();
+    let fmt = bytes.windows(4).position(|chunk| chunk == b"fmt ").unwrap();
+    let old_size = u32::from_le_bytes(bytes[fmt + 4..fmt + 8].try_into().unwrap());
+    assert_eq!(old_size, 16);
+    bytes[fmt + 4..fmt + 8].copy_from_slice(&40_u32.to_le_bytes());
+    bytes[fmt + 8..fmt + 10].copy_from_slice(&0xfffe_u16.to_le_bytes());
+    let extension = [
+        22, 0, // extension size
+        16, 0, // valid bits per sample
+        4, 0, 0, 0, // mono center channel mask
+        1, 0, 0, 0, 0, 0, 0x10, 0, 0x80, 0, 0, 0xaa, 0, 0x38, 0x9b, 0x71,
+    ];
+    bytes.splice(fmt + 24..fmt + 24, extension);
+    let riff_size = u32::from_le_bytes(bytes[4..8].try_into().unwrap()) + 24;
+    bytes[4..8].copy_from_slice(&riff_size.to_le_bytes());
+    fs::write(&track, bytes).unwrap();
+
+    let result = scan_library(&Catalog::default(), std::slice::from_ref(&root));
+
+    assert!(result.media_errors.is_empty(), "{:?}", result.media_errors);
+    assert_eq!(result.catalog.entries.len(), 1);
+}
+
+#[test]
+fn an_apev2_tag_edit_does_not_change_mp3_identity() {
+    let directory = TestDirectory::new();
+    let root = directory.0.join("music");
+    fs::create_dir(&root).unwrap();
+    let track = root.join("track.mp3");
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/metadata.mp3");
+    fs::copy(fixture, &track).unwrap();
+    let mut previous = scan_library(&Catalog::default(), std::slice::from_ref(&root)).catalog;
+    previous.entries[0].play_count = 7;
+    let original_id = previous.entries[0].id;
+    let mut ape_footer = b"APETAGEX".to_vec();
+    ape_footer.extend_from_slice(&2_000_u32.to_le_bytes());
+    ape_footer.extend_from_slice(&32_u32.to_le_bytes());
+    ape_footer.extend_from_slice(&0_u32.to_le_bytes());
+    ape_footer.extend_from_slice(&0_u32.to_le_bytes());
+    ape_footer.extend_from_slice(&[0; 8]);
+    let mut bytes = fs::read(&track).unwrap();
+    bytes.extend_from_slice(&ape_footer);
+    fs::write(&track, bytes).unwrap();
+
+    let result = scan_library(&previous, std::slice::from_ref(&root));
+
+    assert!(result.media_errors.is_empty(), "{:?}", result.media_errors);
+    assert_eq!(result.catalog.entries.len(), 1);
+    assert_eq!(result.catalog.entries[0].id, original_id);
+    assert_eq!(result.catalog.entries[0].play_count, 7);
 }
 
 #[test]

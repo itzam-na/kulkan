@@ -1,4 +1,4 @@
-use std::collections::{BTreeSet, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
@@ -221,24 +221,38 @@ pub fn scan_library(previous: &Catalog, roots: &[PathBuf]) -> ScanResult {
 
     let mut discovered_paths = discovered.iter().cloned().collect::<Vec<_>>();
     discovered_paths.sort();
-    for path in &discovered_paths {
-        match read_metadata(path) {
+    let scan_data = discovered_paths
+        .iter()
+        .map(|path| (path.clone(), read_metadata(path)))
+        .collect::<Vec<_>>();
+    let mut fingerprint_path_counts = HashMap::new();
+    for (_, result) in &scan_data {
+        if let Ok((_, _, fingerprint)) = result {
+            *fingerprint_path_counts
+                .entry(fingerprint.clone())
+                .or_insert(0) += 1;
+        }
+    }
+    for (path, result) in scan_data {
+        match result {
             Ok((metadata, duration, content_fingerprint)) => {
                 let same_path = entries.iter().position(|entry| {
-                    entry.path == *path
+                    entry.path == path
                         && entry.content_fingerprint == content_fingerprint
                         && !claimed_ids.contains(&entry.id)
                 });
-                let previous_same_path = entries.iter().any(|entry| entry.path == *path);
+                let previous_same_path = entries.iter().any(|entry| entry.path == path);
                 let matching_path = same_path.or_else(|| {
-                    if previous_same_path {
+                    if previous_same_path
+                        || fingerprint_path_counts.get(&content_fingerprint) != Some(&1)
+                    {
                         return None;
                     }
                     let candidates = entries
                         .iter()
                         .enumerate()
                         .filter(|(_, entry)| {
-                            entry.path != *path
+                            entry.path != path
                                 && entry.content_fingerprint == content_fingerprint
                                 && !claimed_ids.contains(&entry.id)
                                 && entry_is_confirmed_missing(
@@ -458,7 +472,7 @@ fn fingerprint_wav(bytes: &[u8], hash: &mut Sha256) -> Result<(), String> {
             && format.len() >= 40
             && read_u16_le(format, 24)? == 1
             && format.get(26..40)
-                == Some(&[0, 0, 0, 0, 0, 0x10, 0x80, 0, 0, 0xaa, 0, 0x38, 0x9b, 0x71][..]));
+                == Some(&[0, 0, 0, 0, 0x10, 0, 0x80, 0, 0, 0xaa, 0, 0x38, 0x9b, 0x71][..]));
     if !is_pcm {
         return Err("only PCM WAVE files have supported content identity".to_owned());
     }
@@ -515,9 +529,16 @@ fn fingerprint_flac(bytes: &[u8], hash: &mut Sha256) -> Result<(), String> {
     hash.update(sample_rate.to_be_bytes());
     hash.update(channels.to_be_bytes());
     hash.update(bits_per_sample.to_be_bytes());
+    let mut audio_end = bytes.len();
+    if audio_end >= 128 && bytes.get(audio_end - 128..audio_end - 125) == Some(b"TAG") {
+        audio_end -= 128;
+    }
+    if let Some(tag_start) = apev2_tag_start(bytes, audio_end) {
+        audio_end = tag_start;
+    }
     hash.update(
         bytes
-            .get(offset..)
+            .get(offset..audio_end)
             .filter(|frames| !frames.is_empty())
             .ok_or_else(|| "FLAC stream has no audio frames".to_owned())?,
     );
@@ -526,29 +547,33 @@ fn fingerprint_flac(bytes: &[u8], hash: &mut Sha256) -> Result<(), String> {
 
 fn fingerprint_mp3(bytes: &[u8], hash: &mut Sha256) -> Result<(), String> {
     hash.update(b"MPEG-audio-frames\0");
+    let mut audio_end = bytes.len();
+    if audio_end >= 128 && bytes.get(audio_end - 128..audio_end - 125) == Some(b"TAG") {
+        audio_end -= 128;
+    }
+    if let Some(tag_start) = apev2_tag_start(bytes, audio_end) {
+        audio_end = tag_start;
+    }
     let mut offset = 0;
     let mut frames = 0_u64;
-    while offset < bytes.len() {
+    while offset < audio_end {
         if let Some(end) = id3_tag_end(bytes, offset) {
             offset = end;
             continue;
         }
-        if bytes.get(offset..offset + 3) == Some(b"TAG") {
-            if offset + 128 != bytes.len() {
-                return Err("unexpected bytes after an ID3v1 tag".to_owned());
-            }
-            offset += 128;
-            continue;
-        }
-        let Some(frame_length) = mp3_frame_length(bytes.get(offset..).unwrap_or_default()) else {
-            if frames == 0 && bytes[offset..].iter().all(|byte| *byte == 0) {
+        let Some(frame_length) = mp3_frame_length(bytes.get(offset..audio_end).unwrap_or_default())
+        else {
+            if frames == 0 && bytes[offset..audio_end].iter().all(|byte| *byte == 0) {
                 break;
             }
             return Err("invalid or truncated MPEG audio frame".to_owned());
         };
         let frame = bytes
-            .get(offset..offset + frame_length)
+            .get(offset..(offset + frame_length).min(audio_end))
             .ok_or_else(|| "truncated MPEG audio frame".to_owned())?;
+        if frame.len() != frame_length {
+            return Err("truncated MPEG audio frame".to_owned());
+        }
         hash.update((frame.len() as u32).to_be_bytes());
         hash.update(frame);
         frames += 1;
@@ -558,6 +583,23 @@ fn fingerprint_mp3(bytes: &[u8], hash: &mut Sha256) -> Result<(), String> {
         return Err("MPEG audio stream has no frames".to_owned());
     }
     Ok(())
+}
+
+fn apev2_tag_start(bytes: &[u8], end: usize) -> Option<usize> {
+    let footer_start = end.checked_sub(32)?;
+    let footer = bytes.get(footer_start..end)?;
+    if &footer[..8] != b"APETAGEX" {
+        return None;
+    }
+    let size = u32::from_le_bytes(footer[12..16].try_into().ok()?) as usize;
+    let tag_start = end.checked_sub(size)?;
+    let has_header = u32::from_le_bytes(footer[20..24].try_into().ok()?) & 0x2000_0000 != 0;
+    let tag_start = if has_header {
+        tag_start.checked_sub(32)?
+    } else {
+        tag_start
+    };
+    (tag_start <= footer_start).then_some(tag_start)
 }
 
 fn id3_tag_end(bytes: &[u8], offset: usize) -> Option<usize> {
@@ -614,6 +656,8 @@ fn mp3_frame_length(frame: &[u8]) -> Option<usize> {
 fn fingerprint_ogg(bytes: &[u8], hash: &mut Sha256) -> Result<(), String> {
     let mut offset = 0;
     let mut serial = None;
+    let mut expected_sequence = None;
+    let mut saw_eos = false;
     let mut packet_buffer = Vec::new();
     let mut packets = Vec::new();
     while offset < bytes.len() {
@@ -622,10 +666,19 @@ fn fingerprint_ogg(bytes: &[u8], hash: &mut Sha256) -> Result<(), String> {
             .filter(|header| &header[..4] == b"OggS" && header[4] == 0)
             .ok_or_else(|| "invalid or truncated Ogg page".to_owned())?;
         let page_serial = u32::from_le_bytes(header[14..18].try_into().unwrap());
+        if saw_eos {
+            return Err("Ogg stream contains pages after its end marker".to_owned());
+        }
         if serial.is_some_and(|serial| serial != page_serial) {
             return Err("multiple Ogg logical streams are not supported".to_owned());
         }
         serial = Some(page_serial);
+        let sequence = u32::from_le_bytes(header[18..22].try_into().unwrap());
+        if expected_sequence.is_some_and(|expected| sequence != expected) {
+            return Err("Ogg page sequence is incomplete".to_owned());
+        }
+        expected_sequence = Some(sequence.wrapping_add(1));
+        saw_eos = header[5] & 0x04 != 0;
         let segment_count = header[26] as usize;
         let lacing = bytes
             .get(offset + 27..offset + 27 + segment_count)
@@ -644,6 +697,9 @@ fn fingerprint_ogg(bytes: &[u8], hash: &mut Sha256) -> Result<(), String> {
             }
         }
         offset = body_offset;
+    }
+    if !saw_eos {
+        return Err("Ogg stream has no end marker".to_owned());
     }
     if !packet_buffer.is_empty() {
         return Err("Ogg stream ends with an incomplete packet".to_owned());
