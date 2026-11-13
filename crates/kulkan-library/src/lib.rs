@@ -229,7 +229,11 @@ pub fn scan_library(previous: &Catalog, roots: &[PathBuf]) -> ScanResult {
                         && entry.content_fingerprint == content_fingerprint
                         && !claimed_ids.contains(&entry.id)
                 });
+                let previous_same_path = entries.iter().any(|entry| entry.path == *path);
                 let matching_path = same_path.or_else(|| {
+                    if previous_same_path {
+                        return None;
+                    }
                     let candidates = entries
                         .iter()
                         .enumerate()
@@ -641,6 +645,9 @@ fn fingerprint_ogg(bytes: &[u8], hash: &mut Sha256) -> Result<(), String> {
         }
         offset = body_offset;
     }
+    if !packet_buffer.is_empty() {
+        return Err("Ogg stream ends with an incomplete packet".to_owned());
+    }
     let Some(first) = packets.first() else {
         return Err("Ogg stream has no packets".to_owned());
     };
@@ -658,14 +665,12 @@ fn fingerprint_ogg(bytes: &[u8], hash: &mut Sha256) -> Result<(), String> {
         if packets.len() < 3 || packets[1].get(..8) != Some(b"OpusTags") {
             return Err("incomplete Ogg Opus headers".to_owned());
         }
-        let mut head = packets[0].clone();
+        let head = &packets[0];
         if head.len() < 19 {
             return Err("invalid OpusHead packet".to_owned());
         }
-        head[16] = 0;
-        head[17] = 0;
         hash.update(b"Ogg/Opus\0");
-        hash_packet(hash, &head);
+        hash_packet(hash, head);
         for packet in &packets[2..] {
             hash_packet(hash, packet);
         }

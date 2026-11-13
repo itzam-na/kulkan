@@ -411,6 +411,69 @@ fn metadata_only_changes_preserve_identity_in_every_supported_format() {
 }
 
 #[test]
+fn changing_opus_output_gain_changes_the_content_identity() {
+    let directory = TestDirectory::new();
+    let root = directory.0.join("music");
+    fs::create_dir(&root).unwrap();
+    let track = root.join("track.opus");
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/metadata.opus");
+    fs::copy(fixture, &track).unwrap();
+    let mut previous = scan_library(&Catalog::default(), std::slice::from_ref(&root)).catalog;
+    previous.entries[0].play_count = 3;
+    let old_id = previous.entries[0].id;
+
+    let mut bytes = fs::read(&track).unwrap();
+    let head = bytes
+        .windows(b"OpusHead".len())
+        .position(|window| window == b"OpusHead")
+        .unwrap();
+    bytes[head + 16] = bytes[head + 16].wrapping_add(1);
+    fs::write(&track, bytes).unwrap();
+    let result = scan_library(&previous, std::slice::from_ref(&root));
+
+    assert_eq!(result.catalog.entries.len(), 2);
+    let current = result
+        .catalog
+        .entries
+        .iter()
+        .find(|entry| entry.active)
+        .unwrap();
+    assert_ne!(current.id, old_id);
+    assert_eq!(current.play_count, 0);
+    assert!(
+        result
+            .catalog
+            .entries
+            .iter()
+            .any(|entry| entry.id == old_id && !entry.active && entry.play_count == 3)
+    );
+}
+
+#[test]
+fn a_truncated_ogg_packet_does_not_replace_the_last_known_entry() {
+    let directory = TestDirectory::new();
+    let root = directory.0.join("music");
+    fs::create_dir(&root).unwrap();
+    let track = root.join("track.ogg");
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/metadata.ogg");
+    fs::copy(fixture, &track).unwrap();
+    let mut previous = scan_library(&Catalog::default(), std::slice::from_ref(&root)).catalog;
+    previous.entries[0].play_count = 3;
+    let old_id = previous.entries[0].id;
+
+    let mut bytes = fs::read(&track).unwrap();
+    bytes.pop();
+    fs::write(&track, bytes).unwrap();
+    let result = scan_library(&previous, std::slice::from_ref(&root));
+
+    assert_eq!(result.media_errors.len(), 1);
+    assert_eq!(result.catalog.entries.len(), 1);
+    assert_eq!(result.catalog.entries[0].id, old_id);
+    assert_eq!(result.catalog.entries[0].play_count, 3);
+    assert!(result.catalog.entries[0].active);
+}
+
+#[test]
 fn changed_audio_at_the_same_path_gets_new_identity_and_keeps_old_history_inactive() {
     let directory = TestDirectory::new();
     let root = directory.0.join("music");
@@ -441,6 +504,52 @@ fn changed_audio_at_the_same_path_gets_new_identity_and_keeps_old_history_inacti
     assert_eq!(current.play_count, 0);
     assert_eq!(old.id, old_id);
     assert_eq!(old.play_count, 7);
+}
+
+#[test]
+fn changed_content_at_a_path_never_borrows_another_inactive_entries_history() {
+    let directory = TestDirectory::new();
+    let root = directory.0.join("music");
+    fs::create_dir(&root).unwrap();
+    let existing_path = root.join("a-existing.wav");
+    let other_path = root.join("z-other.wav");
+    write_tagged_pcm_wav_with_sample(&existing_path, "Live set", 0);
+    write_tagged_pcm_wav_with_sample(&other_path, "Live set", 1);
+    let mut previous = scan_library(&Catalog::default(), std::slice::from_ref(&root)).catalog;
+    let existing_id = previous
+        .entries
+        .iter()
+        .find(|entry| entry.path == existing_path)
+        .unwrap()
+        .id;
+    let other = previous
+        .entries
+        .iter_mut()
+        .find(|entry| entry.path == other_path)
+        .unwrap();
+    other.play_count = 9;
+    let other_id = other.id;
+    fs::remove_file(&other_path).unwrap();
+    write_tagged_pcm_wav_with_sample(&existing_path, "Live set", 1);
+
+    let result = scan_library(&previous, std::slice::from_ref(&root));
+
+    let current = result
+        .catalog
+        .entries
+        .iter()
+        .find(|entry| entry.path == existing_path && entry.active)
+        .unwrap();
+    assert_ne!(current.id, existing_id);
+    assert_ne!(current.id, other_id);
+    assert_eq!(current.play_count, 0);
+    assert!(
+        result
+            .catalog
+            .entries
+            .iter()
+            .any(|entry| entry.id == other_id && !entry.active && entry.play_count == 9)
+    );
 }
 
 #[test]
