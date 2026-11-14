@@ -239,6 +239,72 @@ fn server_search_returns_filtered_bounded_pages_and_rejects_invalid_ranges() {
 }
 
 #[test]
+fn unfiltered_server_search_returns_inactive_entries_in_library_order_across_pages() {
+    let directory = TestDirectory::new();
+    let root = directory.0.join("music");
+    fs::create_dir(&root).unwrap();
+    let fixtures =
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../kulkan-library/tests/fixtures");
+    let ordinary_track = fixtures.join("metadata.mp3");
+    let earlier_artist = fixtures.join("metadata-duplicate-artists.mp3");
+    let mut expected_paths = Vec::new();
+    for index in 0..33 {
+        let path = root.join(format!("track-{index:02}.mp3"));
+        fs::copy(&ordinary_track, &path).unwrap();
+        expected_paths.push(path);
+    }
+    let artist_first_path = root.join("artist-first.mp3");
+    fs::copy(earlier_artist, &artist_first_path).unwrap();
+    expected_paths.push(artist_first_path.clone());
+
+    let socket_path = directory.0.join("server.sock");
+    let executable = PathBuf::from(env!("CARGO_BIN_EXE_kulkan-server"));
+    let mut server =
+        ServerProcess::start(&executable, &socket_path, Duration::from_secs(2)).unwrap();
+    server.add_library_root(&root).unwrap();
+    assert_eq!(server.scan_library().unwrap().active_entries, 34);
+
+    let inactive_path = root.join("track-05.mp3");
+    fs::remove_file(&inactive_path).unwrap();
+    let rescan = server.scan_library().unwrap();
+    assert_eq!(rescan.active_entries, 33);
+    assert_eq!(rescan.inactive_entries, 1);
+
+    let first_page = server
+        .search_catalog(&kulkan_runtime::SearchCriteria::default(), 0, 32)
+        .unwrap();
+    let second_page = server
+        .search_catalog(
+            &kulkan_runtime::SearchCriteria::default(),
+            first_page.next_offset.unwrap(),
+            32,
+        )
+        .unwrap();
+
+    assert_eq!(first_page.entries.len(), 32);
+    assert_eq!(first_page.next_offset, Some(32));
+    assert_eq!(second_page.entries.len(), 2);
+    assert_eq!(second_page.next_offset, None);
+    assert_eq!(first_page.entries[0].path, artist_first_path);
+    assert!(
+        first_page
+            .entries
+            .iter()
+            .any(|entry| entry.path == inactive_path && !entry.active)
+    );
+
+    let actual_paths = first_page
+        .entries
+        .iter()
+        .chain(&second_page.entries)
+        .map(|entry| entry.path.clone())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(actual_paths.len(), 34);
+    assert_eq!(actual_paths, expected_paths.into_iter().collect());
+    server.shutdown().unwrap();
+}
+
+#[test]
 fn an_incomplete_server_scan_preserves_the_last_known_catalog_entry() {
     let directory = TestDirectory::new();
     let root = directory.0.join("music");

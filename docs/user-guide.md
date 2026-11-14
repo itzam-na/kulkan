@@ -23,21 +23,21 @@ Kulkán remembers selected roots and the last scanned catalog locally. After rel
 
 ## Browse the catalog
 
-The catalog displays original tag text when available: title, artist credit, release title, release year, track number, genre, duration, and canonical file location. Missing tags remain missing; Kulkán does not guess metadata from filenames or filesystem timestamps. Click a selected row again to deselect it.
+The scanned Library appears by default, ordered by artist, release, track number, then title. It loads in pages; choose **Load More Tracks** to continue. Inactive entries remain visible as unavailable and cannot be queued. Rows display compact track details; additional metadata such as genre and file location is available in the row tooltip. Missing tags remain missing; Kulkán does not guess metadata from filenames or filesystem timestamps. A plain click selects one row (click it again to deselect); use **Ctrl-click** to toggle additional rows and **Shift-click** to select a range.
 
 ## Search the Library
 
-Enter a phrase and choose **Search** to show matching tracks without changing the Queue. Basic search ignores case and diacritics while preserving original displayed tags; the active filters appear as inline chips. **Advanced search** adds AND-combined artist, album, genre, year, duration, file-location, play-count, and Not-yet-played criteria. Use **is missing** for supported metadata fields. Year, duration (seconds), and play count accept an exact number or an inclusive `min..max` range. Results are ordered by artist, release date, track number, then title. Choose **Add Selected** or **Add All Matches** to append results in that order; duplicates are allowed. **Clear** returns to the idle Library view.
+Enter a phrase and choose **Search** to show matching tracks without changing the Queue. Basic search ignores case and diacritics while preserving original displayed tags; the active filters appear as inline chips. **Advanced search** adds AND-combined artist, album, genre, year, duration, file-location, play-count, and Not-yet-played criteria. Use **is missing** for supported metadata fields. Year, duration (seconds), and play count accept an exact number or an inclusive `min..max` range. Search results use the same artist, release, track-number, then title order and are paged with **Load More Matches**. Choose **Add Selected** or **Add All Matches** to append results in that order; duplicates are allowed. **Clear** returns to the full Library view.
 
 Supported discovery formats are MP3, PCM WAV, FLAC, Ogg Vorbis, and Ogg Opus. AAC/M4A is not supported and is reported in the scan status rather than silently ignored. A supported file that is malformed or cannot be read is reported as a media error rather than silently treated as a valid track.
 
 ## Play a track
 
-Select one or more active catalog rows and choose **Play/Pause** to start them. The transport controls are ordered **Previous**, **Stop**, **Play/Pause**, **Next**. Play/Pause pauses or resumes active playback; clicking the timeline seeks. Previous goes to the prior queue entry when the current track has played for less than two seconds, and otherwise restarts the current track. The current artist, title, elapsed time, and duration appear below the catalog. Playback uses the GStreamer plugins packaged with Kulkán and works offline; it does not download decoders or depend on host-installed codec plugins.
+Select one or more active catalog rows and choose **Add Selected** or use the icon-based Play/Pause transport to start them. The persistent bottom player bar shows current-track details, elapsed time, duration, and icon buttons for Previous, Stop, Play/Pause, and Next; each button has an accessible name and tooltip. Play/Pause pauses or resumes active playback; clicking the timeline seeks. Previous goes to the prior queue entry when the current track has played for less than two seconds, and otherwise restarts the current track. Playback uses the GStreamer plugins packaged with Kulkán and works offline; it does not download decoders or depend on host-installed codec plugins.
 
 ## Play history
 
-The Library shows **Not-yet-played** until a track qualifies, then shows its local play count. Set the app-wide **Played threshold (%)** from 1–100; it defaults to 75%, and changes apply to new playback attempts. Kulkán counts distinct portions heard during an attempt, so pauses preserve progress, seeks add none, and replayed portions count only once. Use a row's **Clear history** button or **Clear All Play History** to reset counts, including inactive entries.
+The **Plays** column shows each entry's local qualifying-play count; zero means **Not-yet-played**. Set the app-wide **Played threshold (%)** from 1–100; it defaults to 75%, and changes apply to new playback attempts. Kulkán counts distinct portions heard during an attempt, so pauses preserve progress, seeks add none, and replayed portions count only once. Use a row's **Clear history** button or **Clear All Play History** to reset counts, including inactive entries.
 
 ## Queue
 

@@ -136,7 +136,9 @@ A Playback attempt is one playback of one Track, paused/resumed as needed. It en
 ### Approved layout and search
 
 - Use the Library-first layout: library navigation at left, primary content in the center, and a persistent queue rail at right.
-- While idle, show current-track artwork/details in the center. An explicit search replaces that center content with matching results; clearing search restores the artwork.
+- Show a browsable, paged view of the scanned Library in the center by default. Include inactive entries with an unavailable indication and keep them non-selectable.
+- An explicit search replaces the Library view with matching results; clearing search restores the unfiltered Library. Page both views without loading the entire catalog at once.
+- Order Library and search rows by artist, release, track number, then title. Keep current-track details and playback controls in a persistent bottom player bar; show a helpful empty state when the Library has no scanned entries.
 - Provide Basic search with inline criteria chips and Advanced search with a rule composer. Both preserve the current query/results and the queue rail.
 - Boolean true criteria display as their label alone (for example, “Not-yet-played”); false prefixes “not.” Constrain long labels to the chip/card with ellipsis and make the full label available as a tooltip.
 - Search ignores diacritics while results preserve original metadata.
@@ -144,7 +146,7 @@ A Playback attempt is one playback of one Track, paused/resumed as needed. It en
 
 ### Keyboard, accessibility, and feedback
 
-- Clicking an already-selected catalog entry deselects it. Seeking is performed by clicking the playback timeline; do not add a separate Seek button.
+- A plain click selects only that catalog entry; clicking the sole selected entry again deselects it. Ctrl-click toggles an entry without clearing other selections, and Shift-click selects the inclusive range from the last selection anchor. Seeking is performed by clicking the playback timeline; do not add a separate Seek button.
 
 - Core workflows must be operable by keyboard, with a small documented set of common shortcuts. Custom shortcut remapping is not required for v1.
 - GTK controls must expose accessible names, roles, and states so assistive technologies can discover and operate the core workflows. No formal WCAG conformance level is claimed.

@@ -75,5 +75,8 @@ Identity reconciliation is conservative: same-path exact matches preserve the en
 6. Reconnect/restore access, rescan, then remove a root and rescan. Confirm entries from a removed root are inactive and cannot be selected.
 7. Compare media file checksums before and after scanning to confirm Kulkán did not modify them.
 8. Relaunch and confirm selected roots and cached tracks are restored without an implicit scan; then rescan to verify portal access behavior on the target desktop. Do not infer persistent app-state restoration from portal permission alone.
+9. Confirm the scanned Library is visible by default, is ordered by artist/release/track/title, and can be traversed with **Load More Tracks**. Search for a matching subset, then choose **Clear** and confirm the full Library returns.
+10. Confirm inactive entries remain visible but cannot be selected or queued. With an empty catalog, confirm the Library explains how to add a folder and scan it.
+11. Confirm a plain click selects one track, a second plain click deselects it, Ctrl-click toggles tracks without clearing other selections, and Shift-click selects the inclusive range from the last anchor.
 
 The required seven-distro release matrix is listed in [`SPEC.md`](../SPEC.md) and tracked in Codeberg issue #28. Record which systems were actually tested; do not infer compatibility from a successful build on one distribution.

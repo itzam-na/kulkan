@@ -1,4 +1,7 @@
+mod catalog_selection;
+
 use std::cell::{Cell, RefCell};
+use std::collections::BTreeSet;
 use std::path::PathBuf;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -7,6 +10,7 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::Duration;
 
+use catalog_selection::{SelectionModifiers, SelectionState};
 use gtk::gio;
 use gtk::glib;
 use gtk::prelude::*;
@@ -174,14 +178,16 @@ fn build_main_window(application: &gtk::Application, server_state: Rc<RefCell<Se
         .build();
     window.set_icon_name(Some(APPLICATION_ID));
 
-    let content = gtk::Box::new(gtk::Orientation::Horizontal, 16);
+    let content = gtk::Box::new(gtk::Orientation::Horizontal, 12);
+    content.set_vexpand(true);
     content.set_margin_top(16);
     content.set_margin_bottom(16);
     content.set_margin_start(16);
     content.set_margin_end(16);
 
     let library_sidebar = gtk::Box::new(gtk::Orientation::Vertical, 8);
-    library_sidebar.set_size_request(240, -1);
+    library_sidebar.set_size_request(216, -1);
+    library_sidebar.add_css_class("sidebar");
     let logo = gtk::Image::from_icon_name(APPLICATION_ID);
     logo.set_pixel_size(48);
     logo.set_halign(gtk::Align::Start);
@@ -210,28 +216,35 @@ fn build_main_window(application: &gtk::Application, server_state: Rc<RefCell<Se
     library_sidebar.append(&root_actions);
     let scan_button = gtk::Button::with_label("Scan Library");
     library_sidebar.append(&scan_button);
+    let library_settings = gtk::Expander::new(Some("Library settings & data"));
+    let library_settings_content = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    library_settings_content.set_margin_top(8);
+    library_settings_content.set_margin_start(8);
+    library_settings_content.set_margin_end(8);
     let threshold_label = gtk::Label::new(Some("Played threshold (%)"));
     threshold_label.set_halign(gtk::Align::Start);
-    library_sidebar.append(&threshold_label);
+    library_settings_content.append(&threshold_label);
     let played_threshold = gtk::SpinButton::with_range(1.0, 100.0, 1.0);
     played_threshold.set_value(75.0);
     played_threshold.set_sensitive(false);
     played_threshold.set_tooltip_text(Some("The share of a track needed to count as played."));
     played_threshold
         .update_property(&[gtk::accessible::Property::Label("Played threshold percent")]);
-    library_sidebar.append(&played_threshold);
+    library_settings_content.append(&played_threshold);
     let clear_all_history = gtk::Button::with_label("Clear All Play History");
     clear_all_history.set_sensitive(false);
-    library_sidebar.append(&clear_all_history);
+    library_settings_content.append(&clear_all_history);
     let export_state = gtk::Button::with_label("Export State…");
     let import_state = gtk::Button::with_label("Import State…");
     let reset_state = gtk::Button::with_label("Reset App State…");
     export_state.set_sensitive(false);
     import_state.set_sensitive(false);
     reset_state.set_sensitive(false);
-    library_sidebar.append(&export_state);
-    library_sidebar.append(&import_state);
-    library_sidebar.append(&reset_state);
+    library_settings_content.append(&export_state);
+    library_settings_content.append(&import_state);
+    library_settings_content.append(&reset_state);
+    library_settings.set_child(Some(&library_settings_content));
+    library_sidebar.append(&library_settings);
 
     let main_content = gtk::Box::new(gtk::Orientation::Vertical, 8);
     let status = gtk::Label::new(None);
@@ -321,22 +334,65 @@ fn build_main_window(application: &gtk::Application, server_state: Rc<RefCell<Se
     idle_panel.set_vexpand(true);
     idle_panel.set_valign(gtk::Align::Center);
     idle_panel.set_halign(gtk::Align::Center);
-    let idle_artwork = gtk::Image::from_icon_name("audio-x-generic");
-    idle_artwork.set_pixel_size(128);
-    idle_panel.append(&idle_artwork);
-    let idle_text = gtk::Label::new(Some("Search the Library to find matching tracks."));
-    idle_panel.append(&idle_text);
+    idle_panel.add_css_class("card");
+    idle_panel.set_margin_start(24);
+    idle_panel.set_margin_end(24);
+    idle_panel.set_margin_top(24);
+    idle_panel.set_margin_bottom(24);
+    let empty_library_title = gtk::Label::new(Some("Your Library is empty"));
+    empty_library_title.add_css_class("title-1");
+    idle_panel.append(&empty_library_title);
+    let empty_library_message = gtk::Label::new(Some(
+        "Select Add Folder…, then choose Scan Library to add your tracks here.",
+    ));
+    empty_library_message.add_css_class("dim-label");
+    empty_library_message.set_wrap(true);
+    empty_library_message.set_justify(gtk::Justification::Center);
+    idle_panel.append(&empty_library_message);
     main_content.append(&idle_panel);
 
     let results_panel = gtk::Box::new(gtk::Orientation::Vertical, 8);
     results_panel.set_vexpand(true);
     results_panel.set_visible(false);
-    let catalog_label = gtk::Label::new(Some("Tracks"));
+    let catalog_label = gtk::Label::new(Some("Library"));
     catalog_label.set_halign(gtk::Align::Start);
+    catalog_label.add_css_class("title-2");
     results_panel.append(&catalog_label);
+    let catalog_header = gtk::Grid::new();
+    catalog_header.set_hexpand(true);
+    catalog_header.set_column_spacing(12);
+    catalog_header.set_margin_start(8);
+    catalog_header.set_margin_end(8);
+    for (column, title) in ["Track", "Album", "Duration", "Plays", ""]
+        .into_iter()
+        .enumerate()
+    {
+        let label = gtk::Label::new(Some(title));
+        label.set_halign(gtk::Align::Start);
+        label.add_css_class("heading");
+        label.add_css_class("dim-label");
+        match column {
+            0 => {
+                label.set_width_chars(18);
+                label.set_hexpand(true);
+            }
+            1 => label.set_width_chars(14),
+            2 => label.set_width_chars(8),
+            3 => label.set_width_chars(5),
+            _ => label.set_width_chars(12),
+        }
+        catalog_header.attach(&label, column as i32, 0, 1, 1);
+    }
+    results_panel.append(&catalog_header);
+    let no_matches = gtk::Label::new(Some("No tracks match this search."));
+    no_matches.set_visible(false);
+    no_matches.set_margin_top(24);
+    no_matches.add_css_class("dim-label");
+    results_panel.append(&no_matches);
     let catalog_list = gtk::ListBox::new();
     catalog_list.set_selection_mode(gtk::SelectionMode::Single);
-    catalog_list.update_property(&[gtk::accessible::Property::Label("Library search results")]);
+    catalog_list.update_property(&[gtk::accessible::Property::Label("Library tracks")]);
+    catalog_list.add_css_class("boxed-list");
     let catalog_scroll = gtk::ScrolledWindow::builder()
         .child(&catalog_list)
         .vexpand(true)
@@ -348,32 +404,83 @@ fn build_main_window(application: &gtk::Application, server_state: Rc<RefCell<Se
     results_panel.append(&load_more);
     main_content.append(&results_panel);
 
-    let current_track = gtk::Label::new(Some("Nothing is playing."));
+    let current_track = gtk::Label::new(Some("Nothing is playing"));
     current_track.set_halign(gtk::Align::Start);
     current_track.set_ellipsize(gtk::pango::EllipsizeMode::End);
-    main_content.append(&current_track);
-    let playback_position = gtk::Scale::with_range(gtk::Orientation::Horizontal, 0.0, 1.0, 1.0);
-    playback_position.set_hexpand(true);
-    playback_position.set_draw_value(false);
-    playback_position.set_sensitive(false);
-    playback_position.set_tooltip_text(Some("Click the timeline to seek."));
-    main_content.append(&playback_position);
-    let playback_controls = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    let previous_track = gtk::Button::with_label("Previous");
-    let stop_playback = gtk::Button::with_label("Stop");
-    let play_pause = gtk::Button::with_label("Play/Pause");
-    let next_track = gtk::Button::with_label("Next");
+    current_track.set_hexpand(true);
+    current_track.add_css_class("heading");
+    let current_track_subtitle = gtk::Label::new(Some(""));
+    current_track_subtitle.set_halign(gtk::Align::Start);
+    current_track_subtitle.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    current_track_subtitle.add_css_class("dim-label");
+    let current_track_details = gtk::Box::new(gtk::Orientation::Vertical, 2);
+    current_track_details.set_hexpand(true);
+    current_track_details.append(&current_track);
+    current_track_details.append(&current_track_subtitle);
+    let playback_controls = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    playback_controls.add_css_class("linked");
+    let previous_track = gtk::Button::new();
+    previous_track.set_child(Some(&gtk::Image::from_icon_name(
+        "media-skip-backward-symbolic",
+    )));
+    previous_track.set_tooltip_text(Some("Previous track"));
+    previous_track.update_property(&[gtk::accessible::Property::Label("Previous track")]);
+    let stop_playback = gtk::Button::new();
+    stop_playback.set_child(Some(&gtk::Image::from_icon_name(
+        "media-playback-stop-symbolic",
+    )));
+    stop_playback.set_tooltip_text(Some("Stop playback"));
+    stop_playback.update_property(&[gtk::accessible::Property::Label("Stop playback")]);
+    let play_pause = gtk::Button::new();
+    let play_pause_icon = gtk::Image::from_icon_name("media-playback-start-symbolic");
+    play_pause.set_child(Some(&play_pause_icon));
+    play_pause.set_tooltip_text(Some("Play or pause"));
+    play_pause.update_property(&[gtk::accessible::Property::Label("Play or pause")]);
+    let next_track = gtk::Button::new();
+    next_track.set_child(Some(&gtk::Image::from_icon_name(
+        "media-skip-forward-symbolic",
+    )));
+    next_track.set_tooltip_text(Some("Next track"));
+    next_track.update_property(&[gtk::accessible::Property::Label("Next track")]);
     previous_track.set_sensitive(false);
     stop_playback.set_sensitive(false);
     play_pause.set_sensitive(false);
     next_track.set_sensitive(false);
     for button in [&previous_track, &stop_playback, &play_pause, &next_track] {
+        button.add_css_class("flat");
         playback_controls.append(button);
     }
-    main_content.append(&playback_controls);
+    playback_controls.set_hexpand(true);
+    playback_controls.set_halign(gtk::Align::Center);
+    let playback_top = gtk::Grid::new();
+    playback_top.set_column_homogeneous(true);
+    playback_top.attach(&current_track_details, 0, 0, 1, 1);
+    playback_top.attach(&playback_controls, 1, 0, 1, 1);
+    playback_top.attach(&gtk::Box::new(gtk::Orientation::Horizontal, 0), 2, 0, 1, 1);
+    let playback_position = gtk::Scale::with_range(gtk::Orientation::Horizontal, 0.0, 1.0, 1.0);
+    playback_position.set_hexpand(true);
+    playback_position.set_draw_value(false);
+    playback_position.set_sensitive(false);
+    playback_position.set_tooltip_text(Some("Click the timeline to seek."));
+    let playback_elapsed = gtk::Label::new(Some("0:00"));
+    playback_elapsed.add_css_class("numeric");
+    let playback_duration = gtk::Label::new(Some("0:00"));
+    playback_duration.add_css_class("numeric");
+    let playback_timeline = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    playback_timeline.append(&playback_elapsed);
+    playback_timeline.append(&playback_position);
+    playback_timeline.append(&playback_duration);
+    let playback_bar = gtk::Box::new(gtk::Orientation::Vertical, 6);
+    playback_bar.add_css_class("toolbar");
+    playback_bar.set_margin_start(16);
+    playback_bar.set_margin_end(16);
+    playback_bar.set_margin_bottom(8);
+    playback_bar.append(&playback_top);
+    playback_bar.append(&playback_timeline);
 
     let queue_placeholder = gtk::Box::new(gtk::Orientation::Vertical, 8);
-    queue_placeholder.set_size_request(260, -1);
+    queue_placeholder.set_size_request(264, -1);
+    queue_placeholder.add_css_class("sidebar");
     let queue_title = gtk::Label::new(Some("Queue"));
     queue_title.add_css_class("title-2");
     queue_title.set_halign(gtk::Align::Start);
@@ -440,6 +547,7 @@ fn build_main_window(application: &gtk::Application, server_state: Rc<RefCell<Se
     let shell = gtk::Box::new(gtk::Orientation::Vertical, 8);
     shell.append(&content);
     shell.append(&actions);
+    shell.append(&playback_bar);
     window.set_child(Some(&shell));
 
     let roots_model = Rc::new(RefCell::new(Vec::<PathBuf>::new()));
@@ -519,6 +627,7 @@ fn build_main_window(application: &gtk::Application, server_state: Rc<RefCell<Se
             search_chips: search_chips.clone(),
             idle_panel: idle_panel.clone(),
             results_panel: results_panel.clone(),
+            no_matches: no_matches.clone(),
             status: status.clone(),
             scan_button: scan_button.clone(),
             load_more: load_more.clone(),
@@ -529,8 +638,12 @@ fn build_main_window(application: &gtk::Application, server_state: Rc<RefCell<Se
             queue: queue_ui.clone(),
             playback: PlaybackUi {
                 current_track: current_track.clone(),
+                current_track_subtitle: current_track_subtitle.clone(),
                 position: playback_position.clone(),
+                elapsed: playback_elapsed.clone(),
+                duration: playback_duration.clone(),
                 toggle: play_pause.clone(),
+                toggle_icon: play_pause_icon.clone(),
                 stop: stop_playback.clone(),
             },
             poll_playback: Arc::clone(&poll_playback),
@@ -550,6 +663,7 @@ fn build_main_window(application: &gtk::Application, server_state: Rc<RefCell<Se
     let search_results_panel = results_panel.clone();
     let search_add_all = add_all.clone();
     let search_label = catalog_label.clone();
+    let search_no_matches = no_matches.clone();
     search_button.connect_clicked(move |_| {
         let criteria = match search_criteria_form.criteria() {
             Ok(criteria) => criteria,
@@ -566,6 +680,7 @@ fn build_main_window(application: &gtk::Application, server_state: Rc<RefCell<Se
         search_request_generation.set(generation);
         search_idle_panel.set_visible(false);
         search_results_panel.set_visible(true);
+        search_no_matches.set_visible(false);
         search_add_all.set_label("Add All Matches");
         search_label.set_text("Matching Tracks");
         search_status.set_text("Searching the Library…");
@@ -578,32 +693,52 @@ fn build_main_window(application: &gtk::Application, server_state: Rc<RefCell<Se
     let clear_search_model = Rc::clone(&active_search);
     let clear_search_generation = Rc::clone(&search_generation);
     let clear_search_paging = Rc::clone(&catalog_paging);
-    let clear_search_idle = idle_panel.clone();
-    let clear_search_results = results_panel.clone();
     let clear_search_add_all = add_all.clone();
     let clear_search_status = status.clone();
     let clear_search_label = catalog_label.clone();
     let clear_search_list = catalog_list.clone();
-    let clear_search_entries = Rc::clone(&catalog_entries);
-    let clear_search_actions = catalog_actions.clone();
     let clear_search_chips = search_chips.clone();
+    let clear_search_no_matches = no_matches.clone();
+    let clear_search_state = Rc::clone(&server_state);
+    let clear_search_sender = sender.clone();
+    let clear_search_results_panel = results_panel.clone();
+    let clear_search_empty_panel = idle_panel.clone();
+    let clear_search_load_more = load_more.clone();
+    let clear_search_library_entries = Rc::clone(&catalog_entries);
+    let clear_search_library_actions = catalog_actions.clone();
     clear_search.connect_clicked(move |_| {
         clear_search_form.reset();
-        clear_search_generation.set(clear_search_generation.get().wrapping_add(1));
+        let generation = clear_search_generation.get().wrapping_add(1);
+        clear_search_generation.set(generation);
         clear_search_model.borrow_mut().take();
         clear_search_paging.borrow_mut().take();
+        clear_search_load_more.set_visible(false);
+        clear_search_load_more.set_sensitive(false);
         replace_catalog_rows(
             &clear_search_list,
             &[],
-            &clear_search_entries,
-            &clear_search_actions,
+            &clear_search_library_entries,
+            &clear_search_library_actions,
         );
         replace_search_chips(&clear_search_chips, &SearchCriteria::default());
-        clear_search_results.set_visible(false);
-        clear_search_idle.set_visible(true);
+        clear_search_no_matches.set_visible(false);
+        clear_search_results_panel.set_visible(true);
+        clear_search_empty_panel.set_visible(false);
         clear_search_add_all.set_label("Add All Tracks");
-        clear_search_label.set_text("Tracks");
-        clear_search_status.set_text("Search cleared.");
+        clear_search_label.set_text("Library");
+        clear_search_status.set_text("Loading Library…");
+        if let Some(client) = clear_search_state.borrow().client() {
+            send_search(
+                client,
+                SearchCriteria::default(),
+                generation,
+                clear_search_sender.clone(),
+            );
+        } else {
+            clear_search_results_panel.set_visible(false);
+            clear_search_empty_panel.set_visible(true);
+            clear_search_status.set_text("Server unavailable. Select Retry.");
+        }
     });
     let selection_model = Rc::clone(&catalog_entries);
     let add_for_selection = add_selected.clone();
@@ -613,13 +748,48 @@ fn build_main_window(application: &gtk::Application, server_state: Rc<RefCell<Se
     selection_click.set_button(1);
     selection_click.set_propagation_phase(gtk::PropagationPhase::Capture);
     let selection_list = catalog_list.clone();
-    selection_click.connect_pressed(move |gesture, _, _, y| {
-        if let Some(row) = selection_list.row_at_y(y as i32)
-            && row.is_selected()
-        {
-            selection_list.unselect_row(&row);
-            gesture.set_state(gtk::EventSequenceState::Claimed);
+    let selection_catalog_entries = Rc::clone(&catalog_entries);
+    let selection_state = Rc::new(RefCell::new(SelectionState::default()));
+    let selection_state_for_click = Rc::clone(&selection_state);
+    selection_click.connect_pressed(move |gesture, _, x, y| {
+        let mut picked_widget = selection_list.pick(x, y, gtk::PickFlags::DEFAULT);
+        while let Some(widget) = picked_widget {
+            if widget.is::<gtk::Button>() {
+                return;
+            }
+            picked_widget = widget.parent();
         }
+        let Some(row) = selection_list.row_at_y(y as i32) else {
+            return;
+        };
+        if !row.is_selectable() {
+            return;
+        }
+        let modifiers = gesture.current_event_state();
+        let current_selection = selection_list
+            .selected_rows()
+            .iter()
+            .map(|row| row.index() as usize)
+            .collect::<BTreeSet<_>>();
+        let selection = selection_state_for_click.borrow_mut().select(
+            &current_selection,
+            row.index() as usize,
+            SelectionModifiers {
+                control: modifiers.contains(gtk::gdk::ModifierType::CONTROL_MASK),
+                shift: modifiers.contains(gtk::gdk::ModifierType::SHIFT_MASK),
+            },
+            selection_catalog_entries.borrow().len(),
+        );
+        selection_list.unselect_all();
+        for index in selection {
+            if let Some(row) = selection_list.row_at_index(index as i32)
+                && row.is_selectable()
+            {
+                selection_list.select_row(Some(&row));
+            }
+        }
+        row.grab_focus();
+        gesture.set_state(gtk::EventSequenceState::Claimed);
     });
     catalog_list.add_controller(selection_click);
     catalog_list.connect_row_selected(move |list, _| {
@@ -1422,6 +1592,7 @@ struct LibraryUi {
     search_chips: gtk::Box,
     idle_panel: gtk::Box,
     results_panel: gtk::Box,
+    no_matches: gtk::Label,
     status: gtk::Label,
     scan_button: gtk::Button,
     load_more: gtk::Button,
@@ -1637,8 +1808,12 @@ struct QueueUi {
 
 struct PlaybackUi {
     current_track: gtk::Label,
+    current_track_subtitle: gtk::Label,
     position: gtk::Scale,
+    elapsed: gtk::Label,
+    duration: gtk::Label,
     toggle: gtk::Button,
+    toggle_icon: gtk::Image,
     stop: gtk::Button,
 }
 
@@ -1667,6 +1842,7 @@ fn install_library_events(receiver: Receiver<UiEvent>, ui: LibraryUi) {
         search_chips,
         idle_panel,
         results_panel,
+        no_matches,
         status,
         scan_button,
         load_more,
@@ -1686,14 +1862,19 @@ fn install_library_events(receiver: Receiver<UiEvent>, ui: LibraryUi) {
                     replace_root_rows(&roots_list, &state.selected_roots);
                     remember_catalog_entries(&catalog_details, &page.entries);
                     replace_catalog_rows(&catalog_list, &page.entries, &catalog_entries, &actions);
-                    let _ = client;
                     active_search.borrow_mut().take();
-                    catalog_paging.borrow_mut().take();
+                    *catalog_paging.borrow_mut() = page
+                        .next_offset
+                        .map(|offset| (client, SearchCriteria::default(), offset));
                     replace_search_chips(&search_chips, &SearchCriteria::default());
-                    load_more.set_visible(false);
-                    load_more.set_sensitive(false);
-                    results_panel.set_visible(false);
-                    idle_panel.set_visible(true);
+                    no_matches.set_visible(false);
+                    catalog_label.set_text("Library");
+                    add_all.set_label("Add All Tracks");
+                    load_more.set_label("Load More Tracks");
+                    load_more.set_visible(page.next_offset.is_some());
+                    load_more.set_sensitive(page.next_offset.is_some());
+                    results_panel.set_visible(state.catalog_entries > 0);
+                    idle_panel.set_visible(state.catalog_entries == 0);
                     clear_all_history.set_sensitive(state.catalog_entries > 0);
                     syncing_threshold.set(true);
                     played_threshold.set_value(f64::from(threshold));
@@ -1718,16 +1899,26 @@ fn install_library_events(receiver: Receiver<UiEvent>, ui: LibraryUi) {
                             page.next_offset.map(|offset| (client, criteria, offset));
                         results_panel.set_visible(true);
                         idle_panel.set_visible(false);
+                        no_matches.set_visible(page.entries.is_empty());
+                        catalog_label.set_text("Matching Tracks");
+                        add_all.set_label("Add All Matches");
+                        load_more.set_label("Load More Matches");
                         load_more.set_visible(page.next_offset.is_some());
                         load_more.set_sensitive(page.next_offset.is_some());
                     } else {
                         active_search.borrow_mut().take();
-                        catalog_paging.borrow_mut().take();
+                        *catalog_paging.borrow_mut() = page
+                            .next_offset
+                            .map(|offset| (client, SearchCriteria::default(), offset));
                         replace_search_chips(&search_chips, &SearchCriteria::default());
-                        results_panel.set_visible(false);
-                        idle_panel.set_visible(true);
-                        load_more.set_visible(false);
-                        load_more.set_sensitive(false);
+                        no_matches.set_visible(false);
+                        catalog_label.set_text("Library");
+                        add_all.set_label("Add All Tracks");
+                        load_more.set_label("Load More Tracks");
+                        load_more.set_visible(page.next_offset.is_some());
+                        load_more.set_sensitive(page.next_offset.is_some());
+                        results_panel.set_visible(state.catalog_entries > 0);
+                        idle_panel.set_visible(state.catalog_entries == 0);
                     }
                     clear_all_history.set_sensitive(state.catalog_entries > 0);
                     syncing_threshold.set(true);
@@ -1755,10 +1946,19 @@ fn install_library_events(receiver: Receiver<UiEvent>, ui: LibraryUi) {
                     remember_catalog_entries(&catalog_details, &page.entries);
                     replace_catalog_rows(&catalog_list, &page.entries, &catalog_entries, &actions);
                     catalog_paging.borrow_mut().take();
-                    results_panel.set_visible(false);
-                    idle_panel.set_visible(true);
-                    load_more.set_visible(false);
-                    load_more.set_sensitive(false);
+                    results_panel.set_visible(state.catalog_entries > 0);
+                    idle_panel.set_visible(state.catalog_entries == 0);
+                    no_matches.set_visible(false);
+                    catalog_label.set_text("Library");
+                    add_all.set_label("Add All Tracks");
+                    if let Some(client) = actions.server_state.borrow().client() {
+                        *catalog_paging.borrow_mut() = page
+                            .next_offset
+                            .map(|offset| (client, SearchCriteria::default(), offset));
+                    }
+                    load_more.set_label("Load More Tracks");
+                    load_more.set_visible(page.next_offset.is_some());
+                    load_more.set_sensitive(page.next_offset.is_some());
                     clear_all_history.set_sensitive(state.catalog_entries > 0);
                     syncing_threshold.set(true);
                     played_threshold.set_value(f64::from(threshold));
@@ -1796,10 +1996,19 @@ fn install_library_events(receiver: Receiver<UiEvent>, ui: LibraryUi) {
                     remember_catalog_entries(&catalog_details, &page.entries);
                     replace_catalog_rows(&catalog_list, &page.entries, &catalog_entries, &actions);
                     catalog_paging.borrow_mut().take();
-                    results_panel.set_visible(false);
-                    idle_panel.set_visible(true);
-                    load_more.set_visible(false);
-                    load_more.set_sensitive(false);
+                    results_panel.set_visible(state.catalog_entries > 0);
+                    idle_panel.set_visible(state.catalog_entries == 0);
+                    no_matches.set_visible(false);
+                    catalog_label.set_text("Library");
+                    add_all.set_label("Add All Tracks");
+                    if let Some(client) = actions.server_state.borrow().client() {
+                        *catalog_paging.borrow_mut() = page
+                            .next_offset
+                            .map(|offset| (client, SearchCriteria::default(), offset));
+                    }
+                    load_more.set_label("Load More Tracks");
+                    load_more.set_visible(page.next_offset.is_some());
+                    load_more.set_sensitive(page.next_offset.is_some());
                     clear_all_history.set_sensitive(state.catalog_entries > 0);
                     syncing_threshold.set(true);
                     played_threshold.set_value(f64::from(threshold));
@@ -1860,7 +2069,12 @@ fn install_library_events(receiver: Receiver<UiEvent>, ui: LibraryUi) {
                     }
                     match result {
                         Ok((page, client, criteria)) => {
-                            *active_search.borrow_mut() = Some(criteria.clone());
+                            let library_view = criteria == SearchCriteria::default();
+                            if library_view {
+                                active_search.borrow_mut().take();
+                            } else {
+                                *active_search.borrow_mut() = Some(criteria.clone());
+                            }
                             replace_search_chips(&search_chips, &criteria);
                             remember_catalog_entries(&catalog_details, &page.entries);
                             replace_catalog_rows(
@@ -1869,14 +2083,25 @@ fn install_library_events(receiver: Receiver<UiEvent>, ui: LibraryUi) {
                                 &catalog_entries,
                                 &actions,
                             );
-                            *catalog_paging.borrow_mut() =
-                                page.next_offset.map(|offset| (client, criteria, offset));
-                            results_panel.set_visible(true);
-                            idle_panel.set_visible(false);
+                            *catalog_paging.borrow_mut() = page
+                                .next_offset
+                                .map(|offset| (client, criteria.clone(), offset));
+                            no_matches.set_visible(!library_view && page.entries.is_empty());
+                            results_panel.set_visible(!library_view || !page.entries.is_empty());
+                            idle_panel.set_visible(library_view && page.entries.is_empty());
                             load_more.set_visible(page.next_offset.is_some());
                             load_more.set_sensitive(page.next_offset.is_some());
-                            catalog_label.set_text("Matching Tracks");
-                            status.set_text("Search results updated.");
+                            if library_view {
+                                catalog_label.set_text("Library");
+                                add_all.set_label("Add All Tracks");
+                                load_more.set_label("Load More Tracks");
+                                status.set_text("Library loaded.");
+                            } else {
+                                catalog_label.set_text("Matching Tracks");
+                                add_all.set_label("Add All Matches");
+                                load_more.set_label("Load More Matches");
+                                status.set_text("Search results updated.");
+                            }
                         }
                         Err(error) => status.set_text(&format!("Search failed: {error}")),
                     }
@@ -1902,17 +2127,27 @@ fn install_library_events(receiver: Receiver<UiEvent>, ui: LibraryUi) {
                             page.next_offset.map(|offset| (client, criteria, offset));
                         results_panel.set_visible(true);
                         idle_panel.set_visible(false);
+                        no_matches.set_visible(page.entries.is_empty());
                         catalog_label.set_text("Matching Tracks");
+                        add_all.set_label("Add All Matches");
+                        load_more.set_label("Load More Matches");
                         load_more.set_visible(page.next_offset.is_some());
                         load_more.set_sensitive(page.next_offset.is_some());
                     } else {
                         active_search.borrow_mut().take();
-                        catalog_paging.borrow_mut().take();
+                        *catalog_paging.borrow_mut() = page
+                            .next_offset
+                            .map(|offset| (client, SearchCriteria::default(), offset));
                         replace_search_chips(&search_chips, &SearchCriteria::default());
-                        results_panel.set_visible(false);
-                        idle_panel.set_visible(true);
-                        load_more.set_visible(false);
-                        load_more.set_sensitive(false);
+                        no_matches.set_visible(false);
+                        catalog_label.set_text("Library");
+                        add_all.set_label("Add All Tracks");
+                        load_more.set_label("Load More Tracks");
+                        load_more.set_visible(page.next_offset.is_some());
+                        load_more.set_sensitive(page.next_offset.is_some());
+                        let has_entries = summary.active_entries + summary.inactive_entries > 0;
+                        results_panel.set_visible(has_entries);
+                        idle_panel.set_visible(!has_entries);
                     }
                     clear_all_history
                         .set_sensitive(summary.active_entries + summary.inactive_entries > 0);
@@ -1930,7 +2165,7 @@ fn install_library_events(receiver: Receiver<UiEvent>, ui: LibraryUi) {
                     });
                     load_more.set_visible(page.next_offset.is_some());
                     load_more.set_sensitive(page.next_offset.is_some());
-                    status.set_text("More catalog entries loaded.");
+                    status.set_text("More tracks loaded.");
                 }
                 UiEvent::CatalogPage(Err(error)) => {
                     load_more.set_sensitive(true);
@@ -1974,6 +2209,7 @@ fn install_library_events(receiver: Receiver<UiEvent>, ui: LibraryUi) {
                             playback
                                 .current_track
                                 .set_text("Playback server unavailable");
+                            playback.current_track_subtitle.set_text("");
                             playback.toggle.set_sensitive(false);
                             playback.stop.set_sensitive(false);
                             retry.set_sensitive(false);
@@ -2171,7 +2407,7 @@ fn install_playback_poll(
 impl PlaybackUi {
     fn apply(&self, snapshot: &PlaybackSnapshot, entries: &[LibraryEntry], status: &gtk::Label) {
         let track_detail = snapshot.track.as_ref().map_or_else(
-            || "".to_owned(),
+            || None,
             |path| {
                 entries
                     .iter()
@@ -2184,9 +2420,20 @@ impl PlaybackUi {
                         } else {
                             view.artists.join(", ")
                         };
-                        format!("{artists} — {title}")
+                        let release = view
+                            .release_title
+                            .unwrap_or_else(|| "No album tag".to_owned());
+                        (title.to_owned(), format!("{artists} · {release}"))
                     })
-                    .unwrap_or_else(|| path.display().to_string())
+                    .or_else(|| {
+                        Some((
+                            path.file_name().map_or_else(
+                                || path.display().to_string(),
+                                |name| name.to_string_lossy().into_owned(),
+                            ),
+                            path.display().to_string(),
+                        ))
+                    })
             },
         );
         let state_text = match snapshot.status {
@@ -2206,22 +2453,33 @@ impl PlaybackUi {
         } else {
             status.set_text(&state_text);
         }
-        if snapshot.track.is_some() {
-            let elapsed = format_time(snapshot.position_ms);
-            let duration = snapshot
+        if let Some((title, subtitle)) = track_detail {
+            self.current_track.set_text(&title);
+            self.current_track_subtitle.set_text(&subtitle);
+        } else {
+            self.current_track.set_text("Nothing is playing");
+            self.current_track_subtitle.set_text("");
+        }
+        self.elapsed.set_text(&format_time(snapshot.position_ms));
+        self.duration.set_text(
+            &snapshot
                 .duration_ms
                 .map(format_time)
-                .unwrap_or_else(|| "Duration unavailable".to_owned());
-            self.current_track.set_text(&format!(
-                "{state_text}: {track_detail} · {elapsed} / {duration}"
-            ));
-        } else {
-            self.current_track.set_text("Nothing is playing.");
-        }
+                .unwrap_or_else(|| "0:00".to_owned()),
+        );
         let duration_ms = snapshot.duration_ms.unwrap_or(1).max(1);
         self.position.set_range(0.0, duration_ms as f64);
         self.position
             .set_value(snapshot.position_ms.min(duration_ms) as f64);
+        let (icon_name, label) = if snapshot.status == PlaybackStatus::Playing {
+            ("media-playback-pause-symbolic", "Pause playback")
+        } else {
+            ("media-playback-start-symbolic", "Play playback")
+        };
+        self.toggle_icon.set_icon_name(Some(icon_name));
+        self.toggle.set_tooltip_text(Some(label));
+        self.toggle
+            .update_property(&[gtk::accessible::Property::Label(label)]);
         let active = matches!(
             snapshot.status,
             PlaybackStatus::Playing | PlaybackStatus::Paused
@@ -2451,7 +2709,8 @@ fn render_catalog_row(entry: &LibraryEntry, actions: &CatalogActions) -> gtk::Li
     row.set_selectable(view.selectable);
     row.set_activatable(view.selectable);
 
-    let content = gtk::Box::new(gtk::Orientation::Vertical, 4);
+    let track_content = gtk::Box::new(gtk::Orientation::Vertical, 2);
+    track_content.set_hexpand(true);
     let title = view.title.as_deref().unwrap_or("(No title tag)");
     let title = if view.active {
         title.to_owned()
@@ -2460,60 +2719,82 @@ fn render_catalog_row(entry: &LibraryEntry, actions: &CatalogActions) -> gtk::Li
     };
     let title_label = gtk::Label::new(Some(&title));
     title_label.set_halign(gtk::Align::Start);
+    title_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    title_label.set_width_chars(18);
     title_label.add_css_class("heading");
-    content.append(&title_label);
+    track_content.append(&title_label);
 
     let artist = if view.artists.is_empty() {
         "(No artist tag)".to_owned()
     } else {
         view.artists.join(", ")
     };
-    let release = view.release_title.as_deref().unwrap_or("(No release tag)");
-    let track_number = view
-        .track_number
-        .map(|number| format!(" · Track {number}"))
-        .unwrap_or_default();
-    let year = view
-        .release_year
-        .map(|year| format!(" · {year}"))
-        .unwrap_or_default();
-    let detail = gtk::Label::new(Some(&format!("{artist} · {release}{year}{track_number}")));
-    detail.set_halign(gtk::Align::Start);
-    detail.set_wrap(true);
-    content.append(&detail);
+    let artist_label = gtk::Label::new(Some(&artist));
+    artist_label.set_halign(gtk::Align::Start);
+    artist_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    artist_label.set_width_chars(18);
+    artist_label.add_css_class("dim-label");
+    track_content.append(&artist_label);
+
+    let release = view.release_title.as_deref().unwrap_or("(No album tag)");
+    let release = match view.release_year {
+        Some(year) => format!("{release} · {year}"),
+        None => release.to_owned(),
+    };
+    let release_label = gtk::Label::new(Some(&release));
+    release_label.set_halign(gtk::Align::Start);
+    release_label.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    release_label.set_width_chars(14);
+
+    let duration = view
+        .duration
+        .map(|duration| format!("{}:{:02}", duration.as_secs() / 60, duration.as_secs() % 60))
+        .unwrap_or_else(|| "—".to_owned());
+    let duration_label = gtk::Label::new(Some(&duration));
+    duration_label.set_halign(gtk::Align::Start);
+    duration_label.set_width_chars(6);
+
+    let play_count_label = gtk::Label::new(Some(&entry.play_count.to_string()));
+    play_count_label.set_halign(gtk::Align::Start);
+    play_count_label.set_width_chars(5);
+    play_count_label.add_css_class("dim-label");
+    let play_count_description = if entry.play_count == 0 {
+        "Not-yet-played (0 qualifying plays)".to_owned()
+    } else if entry.play_count == 1 {
+        "Played once (1 qualifying play)".to_owned()
+    } else {
+        format!("Played {} times (qualifying plays)", entry.play_count)
+    };
+    play_count_label.set_tooltip_text(Some(&play_count_description));
+
+    let row_content = gtk::Grid::new();
+    row_content.set_hexpand(true);
+    row_content.set_column_spacing(12);
+    row_content.set_margin_start(8);
+    row_content.set_margin_end(8);
+    row_content.set_margin_top(4);
+    row_content.set_margin_bottom(4);
+    row_content.attach(&track_content, 0, 0, 1, 1);
+    row_content.attach(&release_label, 1, 0, 1, 1);
+    row_content.attach(&duration_label, 2, 0, 1, 1);
+    row_content.attach(&play_count_label, 3, 0, 1, 1);
 
     let genres = if view.genres.is_empty() {
         "(No genre tag)".to_owned()
     } else {
         view.genres.join(" · ")
     };
-    let duration = view
-        .duration
-        .map(|duration| format!("{}:{:02}", duration.as_secs() / 60, duration.as_secs() % 60))
-        .unwrap_or_else(|| "Duration unavailable".to_owned());
-    let metadata = gtk::Label::new(Some(&format!(
-        "{genres} · {duration}\n{}",
-        view.location.display()
-    )));
-    metadata.set_halign(gtk::Align::Start);
-    metadata.set_wrap(true);
-    metadata.add_css_class("dim-label");
-    content.append(&metadata);
+    let track_number = view
+        .track_number
+        .map(|number| format!("Track {number}"))
+        .unwrap_or_else(|| "Track number unavailable".to_owned());
+    let tooltip = format!(
+        "{artist} · {release} · {genres} · {track_number}\n{}\n{} qualifying plays",
+        view.location.display(),
+        entry.play_count
+    );
+    row.set_tooltip_text(Some(&tooltip));
 
-    let history = if entry.play_count == 0 {
-        "Not-yet-played".to_owned()
-    } else if entry.play_count == 1 {
-        "Played once".to_owned()
-    } else {
-        format!("Played {} times", entry.play_count)
-    };
-    let history_label = gtk::Label::new(Some(&history));
-    history_label.set_halign(gtk::Align::Start);
-    history_label.add_css_class("dim-label");
-    content.append(&history_label);
-
-    let row_content = gtk::Box::new(gtk::Orientation::Horizontal, 8);
-    row_content.append(&content);
     if entry.play_count > 0 {
         let clear_history = gtk::Button::with_label("Clear history");
         clear_history.set_valign(gtk::Align::Center);
@@ -2537,7 +2818,11 @@ fn render_catalog_row(entry: &LibraryEntry, actions: &CatalogActions) -> gtk::Li
                     .set_text("Server unavailable. Select Retry.");
             }
         });
-        row_content.append(&clear_history);
+        row_content.attach(&clear_history, 4, 0, 1, 1);
+    } else {
+        let history_placeholder = gtk::Label::new(None);
+        history_placeholder.set_width_chars(12);
+        row_content.attach(&history_placeholder, 4, 0, 1, 1);
     }
 
     row.set_child(Some(&row_content));
@@ -2679,11 +2964,11 @@ fn read_scanned_catalog(
     String,
 > {
     let summary = client.scan_library().map_err(|error| error.to_string())?;
-    let page = match &criteria {
-        Some(criteria) => client.search_catalog(criteria, 0, 32),
-        None => client.catalog_page(0, 32),
-    }
-    .map_err(|error| error.to_string())?;
+    let all_tracks = SearchCriteria::default();
+    let page_criteria = criteria.as_ref().unwrap_or(&all_tracks);
+    let page = client
+        .search_catalog(page_criteria, 0, 32)
+        .map_err(|error| error.to_string())?;
     Ok((summary, page, client.clone(), criteria))
 }
 
@@ -2723,11 +3008,11 @@ fn read_library_view(
     String,
 > {
     let state = client.library_state().map_err(|error| error.to_string())?;
-    let page = match &criteria {
-        Some(criteria) => client.search_catalog(criteria, 0, 32),
-        None => client.catalog_page(0, 32),
-    }
-    .map_err(|error| error.to_string())?;
+    let all_tracks = SearchCriteria::default();
+    let page_criteria = criteria.as_ref().unwrap_or(&all_tracks);
+    let page = client
+        .search_catalog(page_criteria, 0, 32)
+        .map_err(|error| error.to_string())?;
     let threshold = client
         .played_threshold()
         .map_err(|error| error.to_string())?;
