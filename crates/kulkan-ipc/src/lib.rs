@@ -6,16 +6,16 @@ use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 
-use kulkan_library::{CatalogPage, LibraryState, ScanSummary};
+use kulkan_library::{CatalogPage, LibraryState, ScanSummary, SearchCriteria};
 use serde::{Deserialize, Serialize};
 
 /// The current wire-protocol version understood by Kulkán clients and servers.
-pub const CURRENT_PROTOCOL_VERSION: u16 = 2;
+pub const CURRENT_PROTOCOL_VERSION: u16 = 6;
 
 /// Maximum JSON envelope size accepted on the local socket.
 pub const MAX_FRAME_SIZE: usize = 64 * 1024;
 
-/// Commands understood by the first version of the local client/server protocol.
+/// Commands understood by the current version of the local client/server protocol.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum Message {
     Ping,
@@ -27,8 +27,29 @@ pub enum Message {
     AddLibraryRoot(PathBuf),
     RemoveLibraryRoot(PathBuf),
     GetLibraryState,
-    GetCatalogPage { offset: usize, limit: usize },
+    GetCatalogPage {
+        offset: usize,
+        limit: usize,
+    },
     ScanLibrary,
+    GetPlayedThreshold,
+    SetPlayedThreshold(u8),
+    PlayedThreshold(u8),
+    ClearEntryPlayHistory(PathBuf),
+    ClearAllPlayHistory,
+    SearchCatalog {
+        criteria: SearchCriteria,
+        offset: usize,
+        limit: usize,
+    },
+    ExportAppState(PathBuf),
+    ImportAppState(PathBuf),
+    ResetAppState,
+    AppStateTransferComplete {
+        library: LibraryState,
+        queue_entries: usize,
+        played_threshold_percent: u8,
+    },
     LibraryState(LibraryState),
     CatalogPage(CatalogPage),
     ScanSummary(ScanSummary),
@@ -46,7 +67,10 @@ pub enum Message {
     PlayQueueEntry(u64),
     PreviousQueueEntry,
     SkipQueueEntry,
-    ReorderQueueEntry { entry_id: u64, position: usize },
+    ReorderQueueEntry {
+        entry_id: u64,
+        position: usize,
+    },
     RemoveQueueEntry(u64),
     ClearQueue,
     SetRepeatMode(RepeatMode),
@@ -82,6 +106,14 @@ pub struct QueueSnapshot {
     pub repeat_mode: RepeatMode,
     pub shuffle: bool,
     pub playback: PlaybackSnapshot,
+    pub play_count_updates: Vec<PlayCountUpdate>,
+}
+
+/// A play count that crossed its threshold during the current server update.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct PlayCountUpdate {
+    pub track: PathBuf,
+    pub play_count: u64,
 }
 
 /// Current transport state reported by the child server's GStreamer pipeline.

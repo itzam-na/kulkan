@@ -14,8 +14,13 @@ use kulkan_ipc::{
     Message, ProtocolError, bind_private_socket, peer_pid, read_message, validate_peer,
     write_message,
 };
-pub use kulkan_ipc::{PlaybackSnapshot, PlaybackStatus, QueueEntry, QueueSnapshot, RepeatMode};
-use kulkan_library::{Catalog, CatalogPage, LibraryState, ScanSummary, scan_library};
+pub use kulkan_ipc::{
+    PlayCountUpdate, PlaybackSnapshot, PlaybackStatus, QueueEntry, QueueSnapshot, RepeatMode,
+};
+pub use kulkan_library::SearchCriteria;
+use kulkan_library::{
+    Catalog, CatalogPage, LibraryState, ScanSummary, scan_library, search_catalog,
+};
 use serde::{Deserialize, Serialize};
 
 mod playback;
@@ -23,7 +28,8 @@ mod queue;
 
 const MAX_CATALOG_PAGE_SIZE: usize = 32;
 const LIBRARY_REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
-const LIBRARY_STATE_VERSION: u16 = 1;
+const LIBRARY_STATE_VERSION: u16 = 2;
+const DEFAULT_PLAYED_THRESHOLD_PERCENT: u8 = 75;
 static NEXT_LIBRARY_STATE_TEMP_FILE: AtomicU64 = AtomicU64::new(0);
 
 /// Runs the local server protocol until the client asks it to shut down.
@@ -48,7 +54,12 @@ pub fn serve_with_library_state(
     let listener = bind_private_socket(socket_path)?;
     let _cleanup = SocketPathCleanup(socket_path.to_path_buf());
     let mut library = LibraryService::load(state_path)?;
-    let mut queue = queue::QueueService::new(audio_sink.map(str::to_owned));
+    let queue_state_path = state_path.map(|path| path.with_file_name("queue.json"));
+    let mut queue = queue::QueueService::load(
+        audio_sink.map(str::to_owned),
+        queue_state_path,
+        &mut library,
+    )?;
 
     for incoming in listener.incoming() {
         let mut stream = incoming?;
@@ -75,7 +86,7 @@ pub fn serve_with_library_state(
             }
             request => {
                 let response = if queue::QueueService::handles(&request) {
-                    queue.handle(request)
+                    queue.handle(request, &mut library)
                 } else {
                     library.handle(request)
                 };
@@ -107,14 +118,21 @@ pub struct ServerClient {
 struct LibraryService {
     selected_roots: Vec<PathBuf>,
     catalog: Catalog,
+    played_threshold_percent: u8,
     state_path: Option<PathBuf>,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
 struct PersistedLibraryState {
     version: u16,
     selected_roots: Vec<PathBuf>,
     catalog: Catalog,
+    #[serde(default = "default_played_threshold_percent")]
+    played_threshold_percent: u8,
+}
+
+fn default_played_threshold_percent() -> u8 {
+    DEFAULT_PLAYED_THRESHOLD_PERCENT
 }
 
 impl LibraryService {
@@ -123,6 +141,7 @@ impl LibraryService {
             return Ok(Self {
                 selected_roots: Vec::new(),
                 catalog: Catalog::default(),
+                played_threshold_percent: DEFAULT_PLAYED_THRESHOLD_PERCENT,
                 state_path: None,
             });
         };
@@ -138,7 +157,7 @@ impl LibraryService {
                             ),
                         )
                     })?;
-                if state.version != LIBRARY_STATE_VERSION {
+                if !matches!(state.version, 1 | LIBRARY_STATE_VERSION) {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
                         format!(
@@ -151,12 +170,14 @@ impl LibraryService {
                 Ok(Self {
                     selected_roots: state.selected_roots,
                     catalog: state.catalog,
+                    played_threshold_percent: state.played_threshold_percent,
                     state_path: Some(state_path.to_path_buf()),
                 })
             }
             Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Self {
                 selected_roots: Vec::new(),
                 catalog: Catalog::default(),
+                played_threshold_percent: DEFAULT_PLAYED_THRESHOLD_PERCENT,
                 state_path: Some(state_path.to_path_buf()),
             }),
             Err(error) => Err(error),
@@ -177,6 +198,7 @@ impl LibraryService {
             version: LIBRARY_STATE_VERSION,
             selected_roots: self.selected_roots.clone(),
             catalog: self.catalog.clone(),
+            played_threshold_percent: self.played_threshold_percent,
         })
         .map_err(|error| io::Error::other(format!("could not encode library state: {error}")))?;
         let temp_path = library_state_temp_path(state_path);
@@ -196,9 +218,63 @@ impl LibraryService {
         }
         result
     }
+
+    fn persisted_state(&self) -> PersistedLibraryState {
+        PersistedLibraryState {
+            version: LIBRARY_STATE_VERSION,
+            selected_roots: self.selected_roots.clone(),
+            catalog: self.catalog.clone(),
+            played_threshold_percent: self.played_threshold_percent,
+        }
+    }
+
+    fn replace_persisted_state(&mut self, mut state: PersistedLibraryState) -> io::Result<()> {
+        if !matches!(state.version, 1 | LIBRARY_STATE_VERSION) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("unsupported library state version {}", state.version),
+            ));
+        }
+        if !(1..=100).contains(&state.played_threshold_percent) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "played threshold in imported state must be from 1 through 100",
+            ));
+        }
+        let old_state = self.persisted_state();
+        state.version = LIBRARY_STATE_VERSION;
+        self.selected_roots = state.selected_roots;
+        self.catalog = state.catalog;
+        self.played_threshold_percent = state.played_threshold_percent;
+        if let Err(error) = self.persist() {
+            self.selected_roots = old_state.selected_roots;
+            self.catalog = old_state.catalog;
+            self.played_threshold_percent = old_state.played_threshold_percent;
+            return Err(error);
+        }
+        Ok(())
+    }
+
+    fn reset(&mut self) -> io::Result<()> {
+        let old_state = self.persisted_state();
+        self.selected_roots.clear();
+        self.catalog = Catalog::default();
+        self.played_threshold_percent = DEFAULT_PLAYED_THRESHOLD_PERCENT;
+        if let Err(error) = self.persist() {
+            self.selected_roots = old_state.selected_roots;
+            self.catalog = old_state.catalog;
+            self.played_threshold_percent = old_state.played_threshold_percent;
+            return Err(error);
+        }
+        Ok(())
+    }
 }
 
 impl LibraryService {
+    fn played_threshold_percent(&self) -> u8 {
+        self.played_threshold_percent
+    }
+
     fn handle(&mut self, request: Message) -> Message {
         match request {
             Message::AddLibraryRoot(path) => {
@@ -225,6 +301,29 @@ impl LibraryService {
                 self.state_message()
             }
             Message::GetLibraryState => self.state_message(),
+            Message::GetPlayedThreshold => Message::PlayedThreshold(self.played_threshold_percent),
+            Message::SetPlayedThreshold(percent) => {
+                if !(1..=100).contains(&percent) {
+                    return Message::LibraryOperationFailed(
+                        "played threshold must be an integer from 1 through 100".to_owned(),
+                    );
+                }
+                let previous = self.played_threshold_percent;
+                self.played_threshold_percent = percent;
+                if let Err(error) = self.persist() {
+                    self.played_threshold_percent = previous;
+                    return Message::LibraryOperationFailed(error.to_string());
+                }
+                Message::PlayedThreshold(percent)
+            }
+            Message::ClearEntryPlayHistory(path) => match self.clear_play_history(Some(&path)) {
+                Ok(()) => self.state_message(),
+                Err(error) => Message::LibraryOperationFailed(error),
+            },
+            Message::ClearAllPlayHistory => match self.clear_play_history(None) {
+                Ok(()) => self.state_message(),
+                Err(error) => Message::LibraryOperationFailed(error),
+            },
             Message::GetCatalogPage { offset, limit } => {
                 if limit == 0 || limit > MAX_CATALOG_PAGE_SIZE {
                     return Message::LibraryOperationFailed(format!(
@@ -236,6 +335,27 @@ impl LibraryService {
                 Message::CatalogPage(CatalogPage {
                     entries: self.catalog.entries[start..end].to_vec(),
                     next_offset: (end < self.catalog.entries.len()).then_some(end),
+                })
+            }
+            Message::SearchCatalog {
+                criteria,
+                offset,
+                limit,
+            } => {
+                if limit == 0 || limit > MAX_CATALOG_PAGE_SIZE {
+                    return Message::LibraryOperationFailed(format!(
+                        "catalog page size must be between 1 and {MAX_CATALOG_PAGE_SIZE}"
+                    ));
+                }
+                let results = match search_catalog(&self.catalog, &criteria) {
+                    Ok(results) => results,
+                    Err(error) => return Message::LibraryOperationFailed(error),
+                };
+                let start = offset.min(results.len());
+                let end = start.saturating_add(limit).min(results.len());
+                Message::CatalogPage(CatalogPage {
+                    entries: results[start..end].to_vec(),
+                    next_offset: (end < results.len()).then_some(end),
                 })
             }
             Message::ScanLibrary => {
@@ -264,10 +384,60 @@ impl LibraryService {
     }
 
     fn state_message(&self) -> Message {
-        Message::LibraryState(LibraryState {
+        Message::LibraryState(self.state())
+    }
+
+    fn state(&self) -> LibraryState {
+        LibraryState {
             selected_roots: self.selected_roots.clone(),
             catalog_entries: self.catalog.entries.len(),
-        })
+        }
+    }
+
+    fn record_qualifying_play(&mut self, path: &Path) -> Result<Option<u64>, String> {
+        let Some(index) = self
+            .catalog
+            .entries
+            .iter()
+            .position(|entry| entry.path == path)
+        else {
+            return Ok(None);
+        };
+        let previous_count = self.catalog.entries[index].play_count;
+        self.catalog.entries[index].play_count = previous_count.saturating_add(1);
+        if self.catalog.entries[index].play_count == previous_count {
+            return Ok(None);
+        }
+        if let Err(error) = self.persist() {
+            self.catalog.entries[index].play_count = previous_count;
+            return Err(error.to_string());
+        }
+        Ok(Some(self.catalog.entries[index].play_count))
+    }
+
+    fn clear_play_history(&mut self, path: Option<&Path>) -> Result<(), String> {
+        let path = path.map(absolute_path);
+        let old_catalog = self.catalog.clone();
+        if let Some(path) = &path {
+            let Some(entry) = self
+                .catalog
+                .entries
+                .iter_mut()
+                .find(|entry| &entry.path == path)
+            else {
+                return Err(format!("Library entry does not exist: {}", path.display()));
+            };
+            entry.play_count = 0;
+        } else {
+            for entry in &mut self.catalog.entries {
+                entry.play_count = 0;
+            }
+        }
+        if let Err(error) = self.persist() {
+            self.catalog = old_catalog;
+            return Err(error.to_string());
+        }
+        Ok(())
     }
 }
 
@@ -408,6 +578,23 @@ impl ServerProcess {
         )
     }
 
+    /// Starts the server with persistent library state and an explicit GStreamer audio sink.
+    pub fn start_with_audio_sink_and_library_state(
+        executable: &Path,
+        socket_path: &Path,
+        state_path: &Path,
+        startup_timeout: Duration,
+        audio_sink: &str,
+    ) -> io::Result<Self> {
+        Self::start_with_options(
+            executable,
+            socket_path,
+            startup_timeout,
+            Some(audio_sink),
+            Some(state_path),
+        )
+    }
+
     fn start_with_options(
         executable: &Path,
         socket_path: &Path,
@@ -540,9 +727,46 @@ impl ServerProcess {
         self.client().library_state()
     }
 
+    pub fn played_threshold(&self) -> io::Result<u8> {
+        self.client().played_threshold()
+    }
+
+    pub fn set_played_threshold(&self, percent: u8) -> io::Result<u8> {
+        self.client().set_played_threshold(percent)
+    }
+
+    pub fn clear_entry_play_history(&self, path: &Path) -> io::Result<LibraryState> {
+        self.client().clear_entry_play_history(path)
+    }
+
+    pub fn clear_all_play_history(&self) -> io::Result<LibraryState> {
+        self.client().clear_all_play_history()
+    }
+
+    pub fn export_app_state(&self, path: &Path) -> io::Result<()> {
+        self.client().export_app_state(path)
+    }
+
+    pub fn import_app_state(&self, path: &Path) -> io::Result<LibraryState> {
+        self.client().import_app_state(path)
+    }
+
+    pub fn reset_app_state(&self) -> io::Result<LibraryState> {
+        self.client().reset_app_state()
+    }
+
     /// Reads one bounded page of catalog entries, including inactive records.
     pub fn catalog_page(&self, offset: usize, limit: usize) -> io::Result<CatalogPage> {
         self.client().catalog_page(offset, limit)
+    }
+
+    pub fn search_catalog(
+        &self,
+        criteria: &SearchCriteria,
+        offset: usize,
+        limit: usize,
+    ) -> io::Result<CatalogPage> {
+        self.client().search_catalog(criteria, offset, limit)
     }
 
     pub fn play_track(&self, path: &Path) -> io::Result<PlaybackSnapshot> {
@@ -659,9 +883,75 @@ impl ServerClient {
         expect_library_state(self.request(Message::GetLibraryState)?)
     }
 
+    pub fn played_threshold(&self) -> io::Result<u8> {
+        match self.request(Message::GetPlayedThreshold)? {
+            Message::PlayedThreshold(percent) => Ok(percent),
+            Message::LibraryOperationFailed(message) => Err(io::Error::other(message)),
+            response => unexpected_library_response(response),
+        }
+    }
+
+    pub fn set_played_threshold(&self, percent: u8) -> io::Result<u8> {
+        match self.request(Message::SetPlayedThreshold(percent))? {
+            Message::PlayedThreshold(percent) => Ok(percent),
+            Message::LibraryOperationFailed(message) => Err(io::Error::other(message)),
+            response => unexpected_library_response(response),
+        }
+    }
+
+    pub fn clear_entry_play_history(&self, path: &Path) -> io::Result<LibraryState> {
+        expect_library_state(self.request(Message::ClearEntryPlayHistory(path.to_path_buf()))?)
+    }
+
+    pub fn clear_all_play_history(&self) -> io::Result<LibraryState> {
+        expect_library_state(self.request(Message::ClearAllPlayHistory)?)
+    }
+
+    pub fn export_app_state(&self, path: &Path) -> io::Result<()> {
+        match self.request(Message::ExportAppState(path.to_path_buf()))? {
+            Message::AppStateTransferComplete { .. } => Ok(()),
+            Message::LibraryOperationFailed(message) => Err(io::Error::other(message)),
+            response => unexpected_library_response(response),
+        }
+    }
+
+    pub fn import_app_state(&self, path: &Path) -> io::Result<LibraryState> {
+        match self.request(Message::ImportAppState(path.to_path_buf()))? {
+            Message::AppStateTransferComplete { library, .. } => Ok(library),
+            Message::LibraryOperationFailed(message) => Err(io::Error::other(message)),
+            response => unexpected_library_response(response),
+        }
+    }
+
+    pub fn reset_app_state(&self) -> io::Result<LibraryState> {
+        match self.request(Message::ResetAppState)? {
+            Message::AppStateTransferComplete { library, .. } => Ok(library),
+            Message::LibraryOperationFailed(message) => Err(io::Error::other(message)),
+            response => unexpected_library_response(response),
+        }
+    }
+
     pub fn catalog_page(&self, offset: usize, limit: usize) -> io::Result<CatalogPage> {
         match self.request(Message::GetCatalogPage { offset, limit })? {
             Message::CatalogPage(page) => Ok(page),
+            Message::LibraryOperationFailed(message) => Err(io::Error::other(message)),
+            response => unexpected_library_response(response),
+        }
+    }
+
+    pub fn search_catalog(
+        &self,
+        criteria: &SearchCriteria,
+        offset: usize,
+        limit: usize,
+    ) -> io::Result<CatalogPage> {
+        match self.request(Message::SearchCatalog {
+            criteria: criteria.clone(),
+            offset,
+            limit,
+        })? {
+            Message::CatalogPage(page) => Ok(page),
+            Message::LibraryOperationFailed(message) => Err(io::Error::other(message)),
             response => unexpected_library_response(response),
         }
     }

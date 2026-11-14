@@ -10,7 +10,7 @@
 - `GLOSSARY.md`: domain language. Read it before changing tests or user-facing terminology.
 - `docs/adr/`: architectural decision records, when present.
 
-The server restores and persists selected roots and the scanned catalog in app-owned state, and performs scans. The GTK client asks it to add/remove roots, trigger scans, read summaries, and page through catalog entries. Adding a root is not a scan. GTK uses a background worker for IPC and scanning so a long scan does not block the UI thread.
+The server restores and persists selected roots, the scanned catalog/history/preferences, and Queue order/settings in app-owned state, and performs scans. The GTK client asks it to add/remove roots, trigger scans, read summaries, search, and page through catalog entries. Adding a root is not a scan. GTK uses a background worker for IPC and scanning so a long scan does not block the UI thread.
 
 ## Build and test
 
@@ -30,12 +30,14 @@ The scan tests use temporary directories and generated minimal WAV samples. The 
 Tests exercise behavior at public boundaries:
 
 - `kulkan_library::scan_library` accepts prior catalog state and selected roots, then returns catalog changes, incomplete paths, and media errors. Integration tests cover duplicate/overlapping roots, selected and nested symlinks, metadata/provenance, read-only media, failed scans, missing files, and removed roots.
-- `ServerProcess` exposes root management, explicit scanning, state summaries, and bounded catalog pages. Integration tests start the actual child server and verify the client-visible result.
+- `kulkan_library::search_catalog` applies the public AND criteria and default result ordering. Tests cover case/diacritic-insensitive matching, explicit missing values, numeric ranges, play counts, and ordering.
+- `ServerProcess` exposes root management, explicit scanning, state summaries, bounded catalog pages, and search pages. Child-server integration tests verify persistence of roots/catalog/history/preferences and app-state export/import without copying media.
 - `ServerProcess`/`ServerClient` expose playback and transport snapshots over the child-server IPC. Integration tests use the real GStreamer pipeline with `fakesink` to cover controls, decoding, and media errors without depending on host audio hardware.
 - `ServerProcess`/`ServerClient` expose queue operations and snapshots over the child-server IPC. Integration tests use the real child server and `fakesink` to cover queue ordering, repeats, shuffle, current-entry changes, and failure skipping; GTK queue wiring remains a manual smoke check.
+- The same public server seam covers played-threshold preferences, coverage across pauses/seeks/replayed intervals, repeat attempts, and per-entry/all-history clearing. Playback uses a synchronized GStreamer `fakesink` so test timing is repeatable without host audio.
 - Unknown media duration is covered through public `scan_library` results; a decodable fixture with unknown duration must produce a positive cached catalog duration.
 - `present_catalog_entry` is the GTK presentation-data boundary. It preserves original tag strings and makes inactive entries non-selectable; GTK renders this model.
-- Folder-portal grants, removable media, host audio routing, GTK queue/transport wiring, selection toggling, timeline seeking, assistive technology, and distro compatibility require manual checks on real desktops; do not claim they passed based only on unit tests.
+- Folder-portal grants, removable media, host audio routing, GTK queue/transport/search wiring, selection toggling, timeline seeking, keyboard shortcuts, assistive technology, and distro compatibility require manual checks on real desktops; do not claim they passed based only on unit tests.
 
 For each behavior change, add a failing test at the relevant public seam, implement the smallest vertical slice that makes it pass, and then review adjacent failure paths. Keep filesystem and portal errors visible; do not turn an incomplete scan into confirmed missing files.
 

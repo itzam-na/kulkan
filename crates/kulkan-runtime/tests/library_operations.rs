@@ -144,6 +144,101 @@ fn a_selected_root_survives_relaunch_before_its_first_scan() {
 }
 
 #[test]
+fn played_threshold_defaults_to_seventy_five_persists_and_rejects_out_of_range_values() {
+    let directory = TestDirectory::new();
+    let socket_path = directory.0.join("server.sock");
+    let state_path = directory.0.join("state/library.json");
+    let executable = PathBuf::from(env!("CARGO_BIN_EXE_kulkan-server"));
+    let mut first_server = ServerProcess::start_with_library_state(
+        &executable,
+        &socket_path,
+        &state_path,
+        Duration::from_secs(2),
+    )
+    .unwrap();
+
+    assert_eq!(first_server.played_threshold().unwrap(), 75);
+    first_server.set_played_threshold(1).unwrap();
+    assert!(first_server.set_played_threshold(0).is_err());
+    assert!(first_server.set_played_threshold(101).is_err());
+    first_server.shutdown().unwrap();
+
+    let mut restored_server = ServerProcess::start_with_library_state(
+        &executable,
+        &socket_path,
+        &state_path,
+        Duration::from_secs(2),
+    )
+    .unwrap();
+    assert_eq!(restored_server.played_threshold().unwrap(), 1);
+    restored_server.shutdown().unwrap();
+}
+
+#[test]
+fn previous_library_state_versions_restore_with_the_default_threshold() {
+    let directory = TestDirectory::new();
+    let socket_path = directory.0.join("server.sock");
+    let state_path = directory.0.join("state/library.json");
+    fs::create_dir_all(state_path.parent().unwrap()).unwrap();
+    fs::write(
+        &state_path,
+        br#"{"version":1,"selected_roots":[],"catalog":{"roots":[],"entries":[]}}"#,
+    )
+    .unwrap();
+    let executable = PathBuf::from(env!("CARGO_BIN_EXE_kulkan-server"));
+
+    let mut server = ServerProcess::start_with_library_state(
+        &executable,
+        &socket_path,
+        &state_path,
+        Duration::from_secs(2),
+    )
+    .unwrap();
+
+    assert_eq!(server.played_threshold().unwrap(), 75);
+    server.shutdown().unwrap();
+}
+
+#[test]
+fn server_search_returns_filtered_bounded_pages_and_rejects_invalid_ranges() {
+    let directory = TestDirectory::new();
+    let root = directory.0.join("music");
+    fs::create_dir(&root).unwrap();
+    let fixture = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../kulkan-library/tests/fixtures/metadata.mp3");
+    for name in ["track-00.mp3", "track-01.mp3", "other.mp3"] {
+        fs::copy(&fixture, root.join(name)).unwrap();
+    }
+    let socket_path = directory.0.join("server.sock");
+    let executable = PathBuf::from(env!("CARGO_BIN_EXE_kulkan-server"));
+    let mut server =
+        ServerProcess::start(&executable, &socket_path, Duration::from_secs(2)).unwrap();
+    server.add_library_root(&root).unwrap();
+    server.scan_library().unwrap();
+
+    let criteria = kulkan_runtime::SearchCriteria {
+        file_location: Some("TRACK-".to_owned()),
+        ..kulkan_runtime::SearchCriteria::default()
+    };
+    let first_page = server.search_catalog(&criteria, 0, 1).unwrap();
+    assert_eq!(first_page.entries.len(), 1);
+    assert_eq!(first_page.next_offset, Some(1));
+    let second_page = server
+        .search_catalog(&criteria, first_page.next_offset.unwrap(), 1)
+        .unwrap();
+    assert_eq!(second_page.entries.len(), 1);
+    assert_eq!(second_page.next_offset, None);
+    assert!(first_page.entries[0].path < second_page.entries[0].path);
+
+    let invalid = kulkan_runtime::SearchCriteria {
+        duration_seconds: Some(kulkan_library::NumericFilter::IsMissing),
+        ..kulkan_runtime::SearchCriteria::default()
+    };
+    assert!(server.search_catalog(&invalid, 0, 10).is_err());
+    server.shutdown().unwrap();
+}
+
+#[test]
 fn an_incomplete_server_scan_preserves_the_last_known_catalog_entry() {
     let directory = TestDirectory::new();
     let root = directory.0.join("music");

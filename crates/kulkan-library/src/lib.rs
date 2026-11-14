@@ -13,6 +13,10 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
+mod search;
+
+pub use search::{NumericFilter, SearchCriteria, TextFilter, search_catalog};
+
 /// One original metadata value and the format field it came from.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct TaggedValue {
