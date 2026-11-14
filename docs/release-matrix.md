@@ -1,6 +1,6 @@
 # Kulkán Arch package verification
 
-**Status:** The source-built AUR recipe is prepared but not yet published. Its source URL targets Codeberg tag `v0.1.1`; publish that tag before submitting the recipe to the AUR.
+**Status:** The source-built AUR recipe is prepared but not yet submitted. Its Codeberg `v0.1.1` source tag is published.
 
 ## Required package checks
 

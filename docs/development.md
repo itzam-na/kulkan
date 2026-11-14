@@ -56,7 +56,7 @@ bash -n PKGBUILD
 makepkg --syncdeps --cleanbuild
 ```
 
-The recipe currently targets the Codeberg `v0.1.1` tag; publish that source tag before submitting the package to the AUR. Review the generated package with `namcap` when available.
+The recipe targets the published Codeberg `v0.1.1` source tag. Review the generated package with `namcap` when available before submitting it to the AUR.
 
 ### Library content identity
 

@@ -19,7 +19,7 @@ MP3, PCM WAV, FLAC, Ogg Vorbis, and Ogg Opus are supported. AAC/M4A is not curre
 
 ## Arch Linux / AUR
 
-The repository includes a source-built `kulkan` PKGBUILD and `.SRCINFO` for x86-64 Arch Linux. The AUR package is not published yet. The recipe targets the `v0.1.1` Codeberg source tag; after that tag is available, build it locally with:
+The repository includes a source-built `kulkan` PKGBUILD and `.SRCINFO` for x86-64 Arch Linux. The `v0.1.1` Codeberg source tag is published; the AUR package submission is still pending. Build it locally with:
 
 ```sh
 makepkg --syncdeps --cleanbuild

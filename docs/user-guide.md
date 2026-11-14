@@ -4,7 +4,7 @@ This guide describes the library, playback, search, queue, play-history, persist
 
 ## Install and launch
 
-Kulkán's source-built AUR package is prepared for x86-64 Arch Linux but has not yet been submitted to the AUR. After the `v0.1.1` source tag is published, build it with `makepkg --syncdeps --cleanbuild` and install the resulting package, or use your preferred AUR helper once it is available there. Launch Kulkán with:
+Kulkán's source-built AUR package is prepared for x86-64 Arch Linux but has not yet been submitted to the AUR. The `v0.1.1` source tag is published. Build the package with `makepkg --syncdeps --cleanbuild` and install the resulting package, or use your preferred AUR helper once it is available there. Launch Kulkán with:
 
 ```sh
 kulkan
