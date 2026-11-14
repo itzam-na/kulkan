@@ -16,8 +16,7 @@ The core experience must work offline. The application is for personal use and m
 - Video, streaming services, remote clients, multi-user access, accounts, cloud services, telemetry, or online-dependent core behavior.
 - Automatic DJ/autoplay behavior outside the listener-managed queue.
 - Advanced OR/grouped criteria or saved rule sets.
-- AAC/M4A and distro-native packages.
-- Public Flathub distribution and selecting an application source-code license.
+- AAC/M4A support and package formats other than the Arch Linux AUR.
 
 ## 2. Architecture and technology constraints
 
@@ -26,28 +25,18 @@ The core experience must work offline. The application is for personal use and m
 - Do not use Electron, Java, or a web runtime as the application shell.
 - Run one application/server instance per user. The client starts the server as needed and shuts it down when the client exits; supervision follows [Server recovery](#10-local-state-and-server-recovery).
 - Use a versioned, length-delimited IPC protocol over the private socket; restrict socket-directory permissions and validate the peer.
-- V1 packaging is Flatpak-only for x86-64, using the GNOME runtime/SDK or a compatible GStreamer runtime extension. Use a private/local Flatpak repository; updates use `flatpak update`.
-- Keep the client and child server in the same sandbox. Grant no network access and avoid broad host-filesystem permissions. Use GTK folder portals for explicitly selected media roots, retaining only the access needed for rescans, and grant the host audio socket permission required for playback.
+- V1 distribution uses a source-built AUR package for x86-64 Arch Linux. The package installs the GTK client and its GStreamer child server with their runtime dependencies; other distributions may build from source but are not packaged or claimed as supported releases.
+- The app performs no network operations and never modifies media files. Run the client and child server as the same user, communicate over a private per-user Unix socket, and let the listener select library roots through GTK's folder chooser.
 
 ## 3. Supported platforms and media
 
-### Linux test baselines
+### Linux packaging target
 
-Test the Flatpak on each of these x86-64 environments:
-
-1. Ubuntu 26.04 LTS
-2. Linux Mint 22.3
-3. Debian 13.7
-4. Current Arch rolling
-5. Fedora 45
-6. openSUSE Tumbleweed
-7. openSUSE Leap 16.1 (document its x86-64-v2 CPU requirement)
-
-Other x86-64 systems with a compatible Flatpak runtime are best-effort; compatibility with every distribution/desktop combination is not promised.
+The release package targets x86-64 Arch Linux through the AUR. Other Linux distributions may compile the project from source, but there is no packaged support or compatibility claim for them.
 
 ### Supported audio formats
 
-V1 supports MP3, WAV/PCM, FLAC, Ogg Vorbis, and Opus. The Flatpak must include the required GStreamer elements in its runtime or compatible extension, including `mpg123audiodec`, `mpegaudioparse`, `wavparse`, `flacdec`, `vorbisdec`, `opusdec`, and an audio sink; do not rely on host-installed plugins. Do not download missing decoders during playback; report an actionable unsupported-format error. AAC/M4A is deferred.
+V1 supports MP3, WAV/PCM, FLAC, Ogg Vorbis, and Opus. The AUR package must depend on GStreamer plugins that provide `mpg123audiodec`, `mpegaudioparse`, `wavparse`, `flacdec`, `vorbisdec`, `opusdec`, and an audio sink. Do not download missing decoders during playback; report an actionable unsupported-format error. AAC/M4A is deferred.
 
 ## 4. Library, scanning, and file identity
 
@@ -175,17 +164,17 @@ Persist selected library roots, the rebuildable metadata/catalog cache, user pre
 
 A first release is complete when:
 
-1. An installable Flatpak works locally; public-store publication is not required.
+1. The source-built AUR package installs the client/server pair and launches on x86-64 Arch Linux.
 2. Every settled requirement has a verifiable acceptance check, automated where practical and otherwise documented for manual execution.
-3. Installation, launch, and representative playback pass on all seven required platform baselines; verify selected-folder portal access across restarts, removable-media roots, and host audio routing.
-4. Every supported audio format passes playback on every required platform baseline. Deeper automated coverage may run on a primary environment.
+3. A clean Arch Linux package build, install, launch, and representative playback pass; verify selected-folder access across restarts, removable-media roots, and host audio routing.
+4. Every supported audio format passes playback on the AUR package. Deeper automated coverage may run on a primary environment.
 5. Core library, search/criteria, queue/playback, history, persistence/export/import, recovery, keyboard, and accessibility workflows pass against their specified behavior, including offline operation.
 
 Release blockers include crashes or hangs; modification of user media; loss of app-owned state; inability to complete a core workflow; or failure of any required platform/format combination. Document and triage lesser defects. Do not set numeric performance targets until reference hardware and library size are defined; crashes, hangs, and unusable core workflows remain blockers.
 
 ## 12. Implementation details intentionally left open
 
-The spec defines behavior, not a database schema, storage engine, IPC message schema, or exact keyboard shortcut assignments. The IPC framing must be versioned and length-delimited as specified above. The implementation must preserve the externally specified behavior and acceptance checks. Choosing an application source-code license is out of scope for v1.
+The spec defines behavior, not a database schema, storage engine, IPC message schema, or exact keyboard shortcut assignments. The IPC framing must be versioned and length-delimited as specified above. The implementation must preserve the externally specified behavior and acceptance checks. The source is licensed under GPL-3.0-or-later.
 
 ## 13. Decision traceability
 

@@ -41,23 +41,22 @@ Tests exercise behavior at public boundaries:
 
 For each behavior change, add a failing test at the relevant public seam, implement the smallest vertical slice that makes it pass, and then review adjacent failure paths. Keep filesystem and portal errors visible; do not turn an incomplete scan into confirmed missing files.
 
-## Flatpak build
+## Arch Linux package (AUR)
 
-The release target is x86-64 on GNOME Platform 51. The sandbox intentionally has no network or broad home-directory access. Media folder access comes from the GTK portal and audio output uses the host audio socket.
-
-```sh
-flatpak-builder --user --install --force-clean \
-  --repo=flatpak/repo flatpak/build flatpak/org.kulkan.Kulkan.yml
-flatpak run org.kulkan.Kulkan
-```
-
-The manifest uses the locked workspace and `flatpak/cargo-sources.json` so compilation can run offline inside the sandbox. When `Cargo.lock` changes, regenerate the source list with `flatpak-cargo-generator.py` from the upstream `flatpak-builder-tools` project:
+The source-built AUR recipe targets x86-64 Arch Linux and pins the Cargo dependency graph with `Cargo.lock`. Regenerate `.SRCINFO` from the recipe after changing its metadata:
 
 ```sh
-python3 flatpak-cargo-generator.py Cargo.lock --output flatpak/cargo-sources.json
+makepkg --printsrcinfo > .SRCINFO
 ```
 
-Regenerate, inspect the diff, and verify the Flatpak build before committing dependency changes. Do not hand-edit crate checksums.
+On Arch Linux, validate and build the package in a clean environment with:
+
+```sh
+bash -n PKGBUILD
+makepkg --syncdeps --cleanbuild
+```
+
+The recipe currently targets the Codeberg `v0.1.1` tag; publish that source tag before submitting the package to the AUR. Review the generated package with `namcap` when available.
 
 ### Library content identity
 
@@ -67,16 +66,16 @@ Identity reconciliation is conservative: same-path exact matches preserve the en
 
 ## Manual library acceptance checklist
 
-1. Launch the Flatpak under a desktop with `xdg-desktop-portal` and select a folder using **Add Folder…**.
+1. Build and install the AUR package on a clean x86-64 Arch Linux system, then launch Kulkán.
 2. Confirm the selection appears, and that the first scan happens only after pressing **Scan Library**.
 3. Include MP3, PCM WAV, FLAC, Ogg Vorbis, and Opus samples; verify original visible tags and file locations.
 4. Select overlapping roots and a directory symlink as a root; verify one catalog entry per resolved path. Verify a nested symlink is skipped.
 5. Disconnect a selected removable volume or revoke access during a test scan. Confirm the scan reports an incomplete path and does not mark last-known entries missing.
 6. Reconnect/restore access, rescan, then remove a root and rescan. Confirm entries from a removed root are inactive and cannot be selected.
 7. Compare media file checksums before and after scanning to confirm Kulkán did not modify them.
-8. Relaunch and confirm selected roots and cached tracks are restored without an implicit scan; then rescan to verify portal access behavior on the target desktop. Do not infer persistent app-state restoration from portal permission alone.
+8. Relaunch and confirm selected roots and cached tracks are restored without an implicit scan; then rescan and confirm the desktop folder chooser still permits access to the selected roots.
 9. Confirm the scanned Library is visible by default, is ordered by artist/release/track/title, and can be traversed with **Load More Tracks**. Search for a matching subset, then choose **Clear** and confirm the full Library returns.
 10. Confirm inactive entries remain visible but cannot be selected or queued. With an empty catalog, confirm the Library explains how to add a folder and scan it.
 11. Confirm a plain click selects one track, a second plain click deselects it, Ctrl-click toggles tracks without clearing other selections, and Shift-click selects the inclusive range from the last anchor.
 
-The required seven-distro release matrix is listed in [`SPEC.md`](../SPEC.md) and tracked in Codeberg issue #28. Record which systems were actually tested; do not infer compatibility from a successful build on one distribution.
+The current packaging target is x86-64 Arch Linux via the AUR. Record the exact Arch image, kernel, desktop session, audio sink, and package commit tested; do not infer compatibility with other distributions from one successful package build.

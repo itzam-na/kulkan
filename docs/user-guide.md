@@ -4,13 +4,13 @@ This guide describes the library, playback, search, queue, play-history, persist
 
 ## Install and launch
 
-Kulkán is currently distributed as a private/local Flatpak, not through Flathub or distro package repositories. Follow [`flatpak/README.md`](../flatpak/README.md) to build and install it for your user. Launch it with:
+Kulkán's source-built AUR package is prepared for x86-64 Arch Linux but has not yet been submitted to the AUR. After the `v0.1.1` source tag is published, build it with `makepkg --syncdeps --cleanbuild` and install the resulting package, or use your preferred AUR helper once it is available there. Launch Kulkán with:
 
 ```sh
-flatpak run org.kulkan.Kulkan
+kulkan
 ```
 
-The application works offline and the Flatpak has no network permission.
+The application works offline and does not modify media files. App-owned state, including selected roots, play history, preferences, and Queue, stays local.
 
 ## Add a music folder and scan
 

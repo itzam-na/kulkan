@@ -1,27 +1,21 @@
-# Kulkán release verification matrix
+# Kulkán Arch package verification
 
-**Status:** Release acceptance is incomplete. Do not infer a platform pass from a build or from the automated GStreamer `fakesink` tests.
+**Status:** The source-built AUR recipe is prepared but not yet published. Its source URL targets Codeberg tag `v0.1.1`; publish that tag before submitting the recipe to the AUR.
 
-For each environment, record the OS image/version, CPU model, Flatpak runtime and application commit, desktop/session, portal backend, audio sink, date, and tester. A platform row passes only after the installed Flatpak launches, folder access survives relaunch/removable-media testing, host audio is audible, and every supported format plays.
+## Required package checks
 
-| Required x86-64 baseline | Install/launch | Folder portal and relaunch | Removable media | Host audio | MP3/WAV/FLAC/Vorbis/Opus | Notes/evidence |
+| Environment | PKGBUILD/.SRCINFO | Clean package build | Install/launch | Audio formats | State and library workflows | Notes/evidence |
 | --- | --- | --- | --- | --- | --- | --- |
-| Ubuntu 26.04 LTS | Not tested | Not tested | Not tested | Not tested | Not tested | |
-| Linux Mint 22.3 | Not tested | Not tested | Not tested | Not tested | Not tested | |
-| Debian 13.7 | Not tested | Not tested | Not tested | Not tested | Not tested | |
-| Current Arch rolling | Flatpak build passed; install/launch not tested | Not tested | Not tested | Not tested | Automated `fakesink` decoding only | Current development host; this is not a platform acceptance pass. |
-| Fedora 45 | Not tested | Not tested | Not tested | Not tested | Not tested | |
-| openSUSE Tumbleweed | Not tested | Not tested | Not tested | Not tested | Not tested | |
-| openSUSE Leap 16.1 | Not tested | Not tested | Not tested | Not tested | Not tested | Verify the documented x86-64-v2 CPU requirement. |
+| Arch Linux x86-64 | Not tested | Not tested | Not tested | Automated `fakesink` decoding only | Not tested | A successful build is not an end-user acceptance pass. |
 
-## Per-platform procedure
+## Arch verification procedure
 
-1. Install the Flatpak from the project-local repository using the documented build/install command, then launch Kulkán.
-2. Add a test media folder through the desktop folder chooser, scan it, and verify the original tags and file locations.
-3. Relaunch; confirm the cached catalog and selected roots return without an implicit scan. Rescan and verify portal grants still work.
-4. Disconnect/reconnect a removable-media root or revoke/restore its grant; confirm incomplete scans preserve last-known entries.
-5. Play MP3, PCM WAV, FLAC, Ogg Vorbis, and Opus through the host audio sink. Record audible output and any plugin/runtime diagnostics.
-6. Verify queue, search, history, backup/restore, recovery, keyboard, and assistive-technology workflows on that desktop. Record any unverified manual interaction explicitly.
-7. Confirm media files were not modified. Do not attach personal recordings as test evidence.
+1. Confirm `.SRCINFO` matches `PKGBUILD` with `makepkg --printsrcinfo`.
+2. Build in a clean x86-64 Arch environment with `makepkg --syncdeps --cleanbuild`; inspect the resulting package with `namcap` when available.
+3. Install the package and launch `kulkan`. Confirm both the client and adjacent `kulkan-server` executable start.
+4. Add a test media folder, scan it, and verify original tags, canonical locations, inactive entries, and the Library/search/Clear workflow.
+5. Play MP3, PCM WAV, FLAC, Ogg Vorbis, and Opus through the host audio sink. Record audible output and GStreamer diagnostics.
+6. Verify queue, play history, export/import, server recovery, keyboard, and assistive-technology workflows.
+7. Confirm media files are not modified and app-owned state survives restart. Do not attach personal audio as test evidence.
 
-Automated child-server decoding through `fakesink` proves decoder/pipeline behavior only; it does not satisfy the host audio or distro checks above. Detailed developer commands and the installed-format test workflow are in [`development.md`](development.md), and the release capstone is tracked by [issue #28](https://codeberg.org/padi/izmusica/issues/28).
+Automated child-server decoding through `fakesink` proves decoder and pipeline behavior only; it does not satisfy package installation, GUI, portal, accessibility, or host audio checks.

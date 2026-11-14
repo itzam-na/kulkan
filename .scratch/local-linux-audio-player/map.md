@@ -12,8 +12,7 @@ An implementation-ready spec for Kulkán, a single-user, local-only audio player
 - The application is named Kulkán.
 - The desktop client and server are separate processes and communicate locally. The client starts the server as needed and stops it when the client exits.
 - The app must not be an Electron, Java, or web-based app disguised as native; it should run directly on Linux.
-- Required distro families: Ubuntu, Arch, Mint, Debian, Fedora, and openSUSE. x86-64 is the initial CPU architecture.
-- V1 packaging is Flatpak-only; test the named distro matrix and treat other compatible x86-64 Flatpak systems as best-effort.
+- The current package target is x86-64 Arch Linux through a source-built AUR package. Other distributions may build from source but have no packaged support claim.
 - The core experience must work offline, without accounts, cloud services, or telemetry.
 - The current intended use is personal use by the user only.
 - The app indexes audio in user-selected folders, only reads the user's media files, and lets the user select matching tracks for a queue. Criteria combine with AND in v1.
@@ -27,7 +26,7 @@ An implementation-ready spec for Kulkán, a single-user, local-only audio player
 
 <!-- One line per resolved ticket, with a link to its detail. -->
 
-- [Find a Linux-native implementation approach that meets the platform requirements](https://codeberg.org/padi/izmusica/issues/2): research recommends Rust, GTK 4, Unix-domain IPC, GStreamer, and Flatpak; alternatives and distro test baselines are documented in the repository research note.
+- [Find a Linux-native implementation approach that meets the platform requirements](https://codeberg.org/padi/izmusica/issues/2): use Rust, GTK 4, Unix-domain IPC, and GStreamer. Initial packaging research is archived; the current distribution target is an Arch AUR source package.
 - [Define criteria-based song selection semantics](https://codeberg.org/padi/izmusica/issues/3): criteria use AND, normalized text and range filters, explicit missing-value handling, artist/album/track ordering, and append selected or all matches to the queue.
 - [Define duration-criterion behavior for unknown durations](https://codeberg.org/padi/izmusica/issues/16): derive duration from audio content through GStreamer when discovery cannot provide it, cache the result, and apply exact/range criteria to the derived duration; report unreadable files as media/discovery errors rather than inventing a value.
 - [Map genre metadata fields for supported audio formats](https://codeberg.org/padi/izmusica/issues/17): map each format's genre tags, preserve ordered values/source provenance, match any value without splitting arbitrary punctuation, and apply explicit missing-value behavior; findings are in the linked research note.
@@ -35,14 +34,14 @@ An implementation-ready spec for Kulkán, a single-user, local-only audio player
 - [Define library scanning and media-file identity behavior](https://codeberg.org/padi/izmusica/issues/5): scans are manual, incomplete areas are preserved, and file/history identity follows explicit path, content, duplicate, and symlink rules.
 - [Research audio-content fingerprints for move and rename detection](https://codeberg.org/padi/izmusica/issues/7): use a format-aware exact encoded-content digest that excludes tags/container bookkeeping; re-encodes remain new identities, while perceptual matches do not transfer history.
 - [Define play-history and configurable played threshold behavior](https://codeberg.org/padi/izmusica/issues/4): count distinct content heard once per attempt, increment on threshold crossing, and persist only local aggregate counts per library entry.
-- [Choose the v1 Linux-native technology stack](https://codeberg.org/padi/izmusica/issues/8): use Rust, GTK 4, private Unix-domain IPC, and GStreamer 1.x; application licensing is out of scope for this version.
-- [Set the Linux support, packaging, and audio-format matrix](https://codeberg.org/padi/izmusica/issues/9): Flatpak-only for v1, tested on the named distro baselines; MP3, WAV/PCM, FLAC, Ogg Vorbis, and Opus are supported, with AAC/M4A deferred.
+- [Choose the v1 Linux-native technology stack](https://codeberg.org/padi/izmusica/issues/8): use Rust, GTK 4, private Unix-domain IPC, and GStreamer 1.x; the source is now GPL-3.0-or-later.
+- [Set the Linux support, packaging, and audio-format matrix](https://codeberg.org/padi/izmusica/issues/9): the current package target is Arch Linux x86-64 via AUR; MP3, WAV/PCM, FLAC, Ogg Vorbis, and Opus are supported, with AAC/M4A deferred.
 - [Define the first-version playback queue controls](https://codeberg.org/padi/izmusica/issues/10): queue supports off/current/whole-queue repeat, per-cycle shuffle, manual edits, and skip-on-failure with explicit retry.
 - [Prototype the first-version queue interface](https://codeberg.org/padi/izmusica/issues/11): user selected the Library-first layout with center artwork while idle and matching results replacing it after an explicit search; full prototype is on the prototype branch.
 - [Define local state persistence and reset behavior](https://codeberg.org/padi/izmusica/issues/12): persist roots, preferences, rebuildable cache, history, and queue locally; manually export/import app-owned state without media files or cloud sync.
 - [Define client recovery when the local server is unavailable](https://codeberg.org/padi/izmusica/issues/13): use one server instance, one automatic restart, preserve app state, and provide explicit retry after failure.
 - [Prototype library search and criteria controls](https://codeberg.org/padi/izmusica/issues/14): the selected Layout A offers Basic search with inline chips and Advanced search with the rule composer; boolean labels and long-text overflow are clarified in the prototype branch.
-- [Define first-release acceptance criteria](https://codeberg.org/padi/izmusica/issues/15): require an installable local Flatpak and verifiable checks for every settled requirement; test every supported format on all seven environments in issue #9; block on crashes, hangs, media modification, app-state loss, or unusable core/platform workflows; defer numeric performance targets until a reference environment is defined. Core workflows are keyboard-operable and expose GTK accessible names, roles, and states; notifications remain in-app.
+- [Define first-release acceptance criteria](https://codeberg.org/padi/izmusica/issues/15): require an installable Arch AUR package and verifiable checks for every settled requirement; test every supported format on Arch; block on crashes, hangs, media modification, app-state loss, or unusable core/platform workflows; defer numeric performance targets until a reference environment is defined. Core workflows are keyboard-operable and expose GTK accessible names, roles, and states; notifications remain in-app.
 
 ## Not yet specified
 
@@ -56,4 +55,4 @@ An implementation-ready spec for Kulkán, a single-user, local-only audio player
 - Automatic DJ/autoplay behavior outside the user-managed queue.
 - Advanced OR/grouped criteria and saved rule sets in the first version.
 - Choosing an application source-code license.
-- Distro-native packages and public Flathub distribution in v1; AAC/M4A support.
+- Package formats other than Arch AUR in v1; AAC/M4A support.
