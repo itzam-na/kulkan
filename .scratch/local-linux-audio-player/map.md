@@ -26,7 +26,7 @@ An implementation-ready spec for Kulkán, a single-user, local-only audio player
 
 <!-- One line per resolved ticket, with a link to its detail. -->
 
-- [Find a Linux-native implementation approach that meets the platform requirements](https://codeberg.org/padi/izmusica/issues/2): use Rust, GTK 4, Unix-domain IPC, and GStreamer. Initial packaging research is archived; the current distribution target is an Arch AUR source package.
+- [Find a Linux-native implementation approach that meets the platform requirements](https://codeberg.org/padi/izmusica/issues/2): use Rust, GTK 4, Unix-domain IPC, and GStreamer; the current distribution target is an Arch AUR source package.
 - [Define criteria-based song selection semantics](https://codeberg.org/padi/izmusica/issues/3): criteria use AND, normalized text and range filters, explicit missing-value handling, artist/album/track ordering, and append selected or all matches to the queue.
 - [Define duration-criterion behavior for unknown durations](https://codeberg.org/padi/izmusica/issues/16): derive duration from audio content through GStreamer when discovery cannot provide it, cache the result, and apply exact/range criteria to the derived duration; report unreadable files as media/discovery errors rather than inventing a value.
 - [Map genre metadata fields for supported audio formats](https://codeberg.org/padi/izmusica/issues/17): map each format's genre tags, preserve ordered values/source provenance, match any value without splitting arbitrary punctuation, and apply explicit missing-value behavior; findings are in the linked research note.
