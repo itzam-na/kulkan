@@ -19,13 +19,17 @@ MP3, PCM WAV, FLAC, Ogg Vorbis, and Ogg Opus are supported. AAC/M4A is not curre
 
 ## Arch Linux / AUR
 
-The repository includes a source-built `kulkan` PKGBUILD and `.SRCINFO` for x86-64 Arch Linux. The `v0.1.1` Codeberg source tag is published; the AUR package submission is still pending. Build it locally with:
+The repository includes a source-built `kulkan` PKGBUILD and `.SRCINFO` for x86-64 Arch Linux. The `v0.1.1` Codeberg source tag is published; the AUR package submission is still pending. Until then, build and install it from the Codeberg checkout:
 
 ```sh
+sudo pacman -S --needed base-devel git
+git clone https://codeberg.org/itzamna/kulkan.git
+cd kulkan
 makepkg --syncdeps --cleanbuild
+sudo pacman -U ./kulkan-0.1.1-1-x86_64.pkg.tar.zst
 ```
 
-Install the resulting package with `sudo pacman -U kulkan-*.pkg.tar.zst`. Once the package is submitted to the AUR, install it with your preferred AUR helper.
+Run `makepkg` as your regular user, not with `sudo`; `--syncdeps` installs the package's missing build and runtime dependencies. Once the package is submitted to the AUR, it can also be installed with your preferred AUR helper.
 
 ## Run
 
