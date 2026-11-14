@@ -10,7 +10,7 @@ use kulkan_library::{CatalogPage, LibraryState, ScanSummary};
 use serde::{Deserialize, Serialize};
 
 /// The current wire-protocol version understood by Kulkán clients and servers.
-pub const CURRENT_PROTOCOL_VERSION: u16 = 1;
+pub const CURRENT_PROTOCOL_VERSION: u16 = 2;
 
 /// Maximum JSON envelope size accepted on the local socket.
 pub const MAX_FRAME_SIZE: usize = 64 * 1024;
@@ -44,6 +44,7 @@ pub enum Message {
     AppendQueue(Vec<PathBuf>),
     GetQueueState,
     PlayQueueEntry(u64),
+    PreviousQueueEntry,
     SkipQueueEntry,
     ReorderQueueEntry { entry_id: u64, position: usize },
     RemoveQueueEntry(u64),
@@ -359,13 +360,13 @@ mod tests {
     #[test]
     fn rejects_a_frame_from_an_unsupported_protocol_version() {
         let (mut peer, mut app) = UnixStream::pair().unwrap();
-        let frame = br#"{"version":2,"message":"Ping"}"#;
+        let frame = br#"{"version":1,"message":"Ping"}"#;
         peer.write_all(&(frame.len() as u32).to_be_bytes()).unwrap();
         peer.write_all(frame).unwrap();
 
         assert!(matches!(
             read_message(&mut app),
-            Err(ProtocolError::UnsupportedVersion(2))
+            Err(ProtocolError::UnsupportedVersion(1))
         ));
     }
 

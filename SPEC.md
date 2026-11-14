@@ -118,6 +118,7 @@ The queue is an ordered sequence of Queue entries; the same Library entry may oc
 - Adding tracks appends them to the pending queue. The listener may reorder or remove upcoming entries.
 - Removing the current entry advances playback. Clearing the queue stops playback and empties it.
 - A failed entry is marked and skipped for the current cycle; keep it available for manual retry/removal and do not automatically retry it in later cycles. A Repeat One failure disables that repeat and advances. If no playable entries remain, stop and report the error.
+- Show transport controls in the order Previous, Stop, Play/Pause, Next. Previous goes to the prior entry in the current queue order when the current track has played for less than two seconds; otherwise it restarts the current track.
 
 ## 8. Playback attempts and play history
 
@@ -142,6 +143,8 @@ A Playback attempt is one playback of one Track, paused/resumed as needed. It en
 - The approved throwaway UI prototypes are discussion artifacts only; do not merge them as production UI.
 
 ### Keyboard, accessibility, and feedback
+
+- Clicking an already-selected catalog entry deselects it. Seeking is performed by clicking the playback timeline; do not add a separate Seek button.
 
 - Core workflows must be operable by keyboard, with a small documented set of common shortcuts. Custom shortcut remapping is not required for v1.
 - GTK controls must expose accessible names, roles, and states so assistive technologies can discover and operate the core workflows. No formal WCAG conformance level is claimed.

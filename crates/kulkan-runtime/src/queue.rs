@@ -37,6 +37,7 @@ impl QueueService {
                 Message::AppendQueue(_)
                     | Message::GetQueueState
                     | Message::PlayQueueEntry(_)
+                    | Message::PreviousQueueEntry
                     | Message::SkipQueueEntry
                     | Message::ReorderQueueEntry { .. }
                     | Message::RemoveQueueEntry(_)
@@ -57,6 +58,10 @@ impl QueueService {
                 Ok(()) => Message::QueueState(self.snapshot()),
                 Err(error) => Message::QueueOperationFailed(error),
             },
+            Message::PreviousQueueEntry => {
+                self.previous();
+                Message::QueueState(self.snapshot())
+            }
             Message::SkipQueueEntry => {
                 self.advance(AdvanceKind::Skipped);
                 Message::QueueState(self.snapshot())
@@ -168,6 +173,26 @@ impl QueueService {
             }
         }
         Ok(())
+    }
+
+    fn previous(&mut self) {
+        self.advance_after_completion();
+        let Some(current_id) = self.current_entry_id else {
+            return;
+        };
+        let Some(current_index) = self.entries.iter().position(|entry| entry.id == current_id)
+        else {
+            return;
+        };
+        let target_id = if self.playback.state().position_ms < 2_000 {
+            current_index
+                .checked_sub(1)
+                .and_then(|previous_index| self.entries.get(previous_index))
+                .map_or(current_id, |entry| entry.id)
+        } else {
+            current_id
+        };
+        let _ = self.play_entry(target_id);
     }
 
     fn shuffle_range(&mut self, start: usize, end: usize) {

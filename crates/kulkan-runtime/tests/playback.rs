@@ -462,6 +462,37 @@ fn shuffling_and_reordering_upcoming_entries_do_not_interrupt_the_current_track(
     server.shutdown().unwrap();
 }
 
+#[test]
+fn previous_goes_back_before_two_seconds_and_restarts_the_current_track_afterward() {
+    let directory = TestDirectory::new();
+    let tracks = ["one.wav", "two.wav"].map(|name| {
+        let track = directory.0.join(name);
+        write_pcm_wav(&track, 80_000);
+        track
+    });
+    let mut server = start_headless_server(&directory);
+    let queue = server.append_to_queue(&tracks).unwrap();
+    let previous_id = queue.entries[0].id;
+    let current_id = queue.entries[1].id;
+
+    server.play_queue_entry(current_id).unwrap();
+    let returned_to_previous = server.previous_queue_entry().unwrap();
+    assert_eq!(returned_to_previous.current_entry_id, Some(previous_id));
+    assert_eq!(returned_to_previous.playback.track, Some(tracks[0].clone()));
+    let previous_at_queue_start = server.previous_queue_entry().unwrap();
+    assert_eq!(previous_at_queue_start.current_entry_id, Some(previous_id));
+    assert!(previous_at_queue_start.playback.position_ms < 2_000);
+
+    server.play_queue_entry(current_id).unwrap();
+    wait_for_position(&server, 2_100);
+    let restarted_current = server.previous_queue_entry().unwrap();
+
+    assert_eq!(restarted_current.current_entry_id, Some(current_id));
+    assert_eq!(restarted_current.playback.track, Some(tracks[1].clone()));
+    assert!(restarted_current.playback.position_ms < 2_000);
+    server.shutdown().unwrap();
+}
+
 fn start_headless_server(directory: &TestDirectory) -> ServerProcess {
     let socket = directory.0.join("server.sock");
     let executable = PathBuf::from(env!("CARGO_BIN_EXE_kulkan-server"));

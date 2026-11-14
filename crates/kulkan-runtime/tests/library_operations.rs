@@ -1,4 +1,5 @@
 use std::fs;
+use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
@@ -51,6 +52,95 @@ fn adding_a_root_does_not_scan_until_the_listener_requests_a_scan() {
     assert_eq!(server.library_state().unwrap().catalog_entries, 1);
 
     server.shutdown().unwrap();
+}
+
+#[test]
+fn selected_roots_and_scanned_tracks_survive_server_relaunch_without_rescanning() {
+    let directory = TestDirectory::new();
+    let root = directory.0.join("music");
+    fs::create_dir(&root).unwrap();
+    write_tagged_pcm_wav(&root.join("one.wav"));
+    let socket_path = directory.0.join("server.sock");
+    let state_path = directory.0.join("state/library.json");
+    let executable = PathBuf::from(env!("CARGO_BIN_EXE_kulkan-server"));
+
+    let mut first_server = ServerProcess::start_with_library_state(
+        &executable,
+        &socket_path,
+        &state_path,
+        Duration::from_secs(2),
+    )
+    .unwrap();
+    first_server.add_library_root(&root).unwrap();
+    assert_eq!(first_server.scan_library().unwrap().active_entries, 1);
+    let original_entry = first_server.catalog_page(0, 10).unwrap().entries[0].clone();
+    assert_eq!(
+        fs::metadata(&state_path).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    assert_eq!(
+        fs::metadata(state_path.parent().unwrap())
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777,
+        0o700
+    );
+    first_server.shutdown().unwrap();
+
+    let mut restored_server = ServerProcess::start_with_library_state(
+        &executable,
+        &socket_path,
+        &state_path,
+        Duration::from_secs(2),
+    )
+    .unwrap();
+
+    let restored_state = restored_server.library_state().unwrap();
+    let restored_entry = restored_server
+        .catalog_page(0, 10)
+        .unwrap()
+        .entries
+        .remove(0);
+    assert_eq!(restored_state.selected_roots, vec![root]);
+    assert_eq!(restored_state.catalog_entries, 1);
+    assert_eq!(restored_entry, original_entry);
+    restored_server.shutdown().unwrap();
+}
+
+#[test]
+fn a_selected_root_survives_relaunch_before_its_first_scan() {
+    let directory = TestDirectory::new();
+    let root = directory.0.join("music");
+    fs::create_dir(&root).unwrap();
+    write_tagged_pcm_wav(&root.join("one.wav"));
+    let socket_path = directory.0.join("server.sock");
+    let state_path = directory.0.join("state/library.json");
+    let executable = PathBuf::from(env!("CARGO_BIN_EXE_kulkan-server"));
+
+    let mut first_server = ServerProcess::start_with_library_state(
+        &executable,
+        &socket_path,
+        &state_path,
+        Duration::from_secs(2),
+    )
+    .unwrap();
+    first_server.add_library_root(&root).unwrap();
+    first_server.shutdown().unwrap();
+
+    let mut restored_server = ServerProcess::start_with_library_state(
+        &executable,
+        &socket_path,
+        &state_path,
+        Duration::from_secs(2),
+    )
+    .unwrap();
+    let restored_state = restored_server.library_state().unwrap();
+
+    assert_eq!(restored_state.selected_roots, vec![root.clone()]);
+    assert_eq!(restored_state.catalog_entries, 0);
+    assert_eq!(restored_server.scan_library().unwrap().active_entries, 1);
+    restored_server.shutdown().unwrap();
 }
 
 #[test]

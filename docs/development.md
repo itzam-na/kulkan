@@ -2,7 +2,7 @@
 
 ## Project map
 
-- `src/main.rs`: GTK application lifecycle, folder chooser, library controls, catalog presentation, and single-track transport controls.
+- `src/main.rs`: GTK application lifecycle, folder chooser, library controls, catalog presentation, and playback transport controls.
 - `crates/kulkan-runtime`: managed server process, single-client activation, GStreamer playback, and the public client/server operations.
 - `crates/kulkan-ipc`: private Unix socket, peer validation, and the versioned length-delimited message protocol.
 - `crates/kulkan-library`: filesystem traversal, read-only metadata discovery through `lofty`, GStreamer duration derivation, scan reconciliation, and catalog presentation data.
@@ -10,7 +10,7 @@
 - `GLOSSARY.md`: domain language. Read it before changing tests or user-facing terminology.
 - `docs/adr/`: architectural decision records, when present.
 
-The server owns the in-memory library state and performs scans. The GTK client asks it to add/remove roots, trigger scans, read summaries, and page through catalog entries. Adding a root is not a scan. GTK uses a background worker for IPC and scanning so a long scan does not block the UI thread.
+The server restores and persists selected roots and the scanned catalog in app-owned state, and performs scans. The GTK client asks it to add/remove roots, trigger scans, read summaries, and page through catalog entries. Adding a root is not a scan. GTK uses a background worker for IPC and scanning so a long scan does not block the UI thread.
 
 ## Build and test
 
@@ -35,7 +35,7 @@ Tests exercise behavior at public boundaries:
 - `ServerProcess`/`ServerClient` expose queue operations and snapshots over the child-server IPC. Integration tests use the real child server and `fakesink` to cover queue ordering, repeats, shuffle, current-entry changes, and failure skipping; GTK queue wiring remains a manual smoke check.
 - Unknown media duration is covered through public `scan_library` results; a decodable fixture with unknown duration must produce a positive cached catalog duration.
 - `present_catalog_entry` is the GTK presentation-data boundary. It preserves original tag strings and makes inactive entries non-selectable; GTK renders this model.
-- Folder-portal grants, removable media, host audio routing, GTK transport wiring, assistive technology, and distro compatibility require manual checks on real desktops; do not claim they passed based only on unit tests.
+- Folder-portal grants, removable media, host audio routing, GTK queue/transport wiring, selection toggling, timeline seeking, assistive technology, and distro compatibility require manual checks on real desktops; do not claim they passed based only on unit tests.
 
 For each behavior change, add a failing test at the relevant public seam, implement the smallest vertical slice that makes it pass, and then review adjacent failure paths. Keep filesystem and portal errors visible; do not turn an incomplete scan into confirmed missing files.
 
@@ -72,6 +72,6 @@ Identity reconciliation is conservative: same-path exact matches preserve the en
 5. Disconnect a selected removable volume or revoke access during a test scan. Confirm the scan reports an incomplete path and does not mark last-known entries missing.
 6. Reconnect/restore access, rescan, then remove a root and rescan. Confirm entries from a removed root are inactive and cannot be selected.
 7. Compare media file checksums before and after scanning to confirm Kulkán did not modify them.
-8. Relaunch and rescan to verify portal access behavior on the target desktop. Persistent app-state restoration is a separate feature and must not be inferred from portal permission alone.
+8. Relaunch and confirm selected roots and cached tracks are restored without an implicit scan; then rescan to verify portal access behavior on the target desktop. Do not infer persistent app-state restoration from portal permission alone.
 
 The required seven-distro release matrix is listed in [`SPEC.md`](../SPEC.md) and tracked in Codeberg issue #28. Record which systems were actually tested; do not infer compatibility from a successful build on one distribution.

@@ -4,9 +4,12 @@ fn main() {
     let mut arguments = std::env::args_os().skip(1);
     let mut socket_path = None;
     let mut audio_sink = None;
+    let mut library_state_path = None;
     while let Some(option) = arguments.next() {
         let Some(value) = arguments.next() else {
-            eprintln!("usage: kulkan-server --socket PATH [--audio-sink NAME]");
+            eprintln!(
+                "usage: kulkan-server --socket PATH [--audio-sink NAME] [--library-state PATH]"
+            );
             std::process::exit(2);
         };
         match option.to_str() {
@@ -18,18 +21,37 @@ fn main() {
                     std::process::exit(2);
                 }
             }
+            Some("--library-state") if library_state_path.is_none() => {
+                library_state_path = Some(PathBuf::from(value));
+            }
             _ => {
-                eprintln!("usage: kulkan-server --socket PATH [--audio-sink NAME]");
+                eprintln!(
+                    "usage: kulkan-server --socket PATH [--audio-sink NAME] [--library-state PATH]"
+                );
                 std::process::exit(2);
             }
         }
     }
 
     let Some(socket_path) = socket_path else {
-        eprintln!("usage: kulkan-server --socket PATH [--audio-sink NAME]");
+        eprintln!("usage: kulkan-server --socket PATH [--audio-sink NAME] [--library-state PATH]");
         std::process::exit(2);
     };
-    if let Err(error) = kulkan_runtime::serve_with_audio_sink(&socket_path, audio_sink.as_deref()) {
+    serve(
+        &socket_path,
+        audio_sink.as_deref(),
+        library_state_path.as_deref(),
+    );
+}
+
+fn serve(
+    socket_path: &std::path::Path,
+    audio_sink: Option<&str>,
+    state_path: Option<&std::path::Path>,
+) {
+    if let Err(error) =
+        kulkan_runtime::serve_with_library_state(socket_path, audio_sink, state_path)
+    {
         eprintln!("Kulkán server failed: {error}");
         std::process::exit(1);
     }

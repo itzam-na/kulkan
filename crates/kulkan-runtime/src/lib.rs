@@ -1,8 +1,10 @@
-use std::io;
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, Write};
+use std::os::unix::fs::{DirBuilderExt, OpenOptionsExt};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, mpsc};
 use std::thread;
 use std::thread::JoinHandle;
@@ -14,12 +16,15 @@ use kulkan_ipc::{
 };
 pub use kulkan_ipc::{PlaybackSnapshot, PlaybackStatus, QueueEntry, QueueSnapshot, RepeatMode};
 use kulkan_library::{Catalog, CatalogPage, LibraryState, ScanSummary, scan_library};
+use serde::{Deserialize, Serialize};
 
 mod playback;
 mod queue;
 
 const MAX_CATALOG_PAGE_SIZE: usize = 32;
 const LIBRARY_REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
+const LIBRARY_STATE_VERSION: u16 = 1;
+static NEXT_LIBRARY_STATE_TEMP_FILE: AtomicU64 = AtomicU64::new(0);
 
 /// Runs the local server protocol until the client asks it to shut down.
 pub fn serve(socket_path: &Path) -> io::Result<()> {
@@ -31,9 +36,18 @@ pub fn serve(socket_path: &Path) -> io::Result<()> {
 /// The sink override is intended for headless integration tests; production uses GStreamer's
 /// automatically selected host audio sink.
 pub fn serve_with_audio_sink(socket_path: &Path, audio_sink: Option<&str>) -> io::Result<()> {
+    serve_with_library_state(socket_path, audio_sink, None)
+}
+
+/// Runs the local server and restores/saves selected roots and the scanned catalog at `state_path`.
+pub fn serve_with_library_state(
+    socket_path: &Path,
+    audio_sink: Option<&str>,
+    state_path: Option<&Path>,
+) -> io::Result<()> {
     let listener = bind_private_socket(socket_path)?;
     let _cleanup = SocketPathCleanup(socket_path.to_path_buf());
-    let mut library = LibraryService::default();
+    let mut library = LibraryService::load(state_path)?;
     let mut queue = queue::QueueService::new(audio_sink.map(str::to_owned));
 
     for incoming in listener.incoming() {
@@ -90,10 +104,98 @@ pub struct ServerClient {
     server_pid: u32,
 }
 
-#[derive(Default)]
 struct LibraryService {
     selected_roots: Vec<PathBuf>,
     catalog: Catalog,
+    state_path: Option<PathBuf>,
+}
+
+#[derive(Deserialize, Serialize)]
+struct PersistedLibraryState {
+    version: u16,
+    selected_roots: Vec<PathBuf>,
+    catalog: Catalog,
+}
+
+impl LibraryService {
+    fn load(state_path: Option<&Path>) -> io::Result<Self> {
+        let Some(state_path) = state_path else {
+            return Ok(Self {
+                selected_roots: Vec::new(),
+                catalog: Catalog::default(),
+                state_path: None,
+            });
+        };
+        match fs::read(state_path) {
+            Ok(bytes) => {
+                let state: PersistedLibraryState =
+                    serde_json::from_slice(&bytes).map_err(|error| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidData,
+                            format!(
+                                "could not read library state {}: {error}",
+                                state_path.display()
+                            ),
+                        )
+                    })?;
+                if state.version != LIBRARY_STATE_VERSION {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        format!(
+                            "unsupported library state version {} in {}",
+                            state.version,
+                            state_path.display()
+                        ),
+                    ));
+                }
+                Ok(Self {
+                    selected_roots: state.selected_roots,
+                    catalog: state.catalog,
+                    state_path: Some(state_path.to_path_buf()),
+                })
+            }
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(Self {
+                selected_roots: Vec::new(),
+                catalog: Catalog::default(),
+                state_path: Some(state_path.to_path_buf()),
+            }),
+            Err(error) => Err(error),
+        }
+    }
+
+    fn persist(&self) -> io::Result<()> {
+        let Some(state_path) = &self.state_path else {
+            return Ok(());
+        };
+        let parent = state_path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        let mut directory = fs::DirBuilder::new();
+        directory.recursive(true).mode(0o700).create(parent)?;
+        let bytes = serde_json::to_vec(&PersistedLibraryState {
+            version: LIBRARY_STATE_VERSION,
+            selected_roots: self.selected_roots.clone(),
+            catalog: self.catalog.clone(),
+        })
+        .map_err(|error| io::Error::other(format!("could not encode library state: {error}")))?;
+        let temp_path = library_state_temp_path(state_path);
+        let result = (|| {
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&temp_path)?;
+            file.write_all(&bytes)?;
+            file.sync_all()?;
+            fs::rename(&temp_path, state_path)?;
+            File::open(parent)?.sync_all()
+        })();
+        if result.is_err() {
+            let _ = fs::remove_file(&temp_path);
+        }
+        result
+    }
 }
 
 impl LibraryService {
@@ -103,12 +205,23 @@ impl LibraryService {
                 let path = absolute_path(&path);
                 if !self.selected_roots.contains(&path) {
                     self.selected_roots.push(path);
+                    if let Err(error) = self.persist() {
+                        self.selected_roots.pop();
+                        return Message::LibraryOperationFailed(error.to_string());
+                    }
                 }
                 self.state_message()
             }
             Message::RemoveLibraryRoot(path) => {
                 let path = absolute_path(&path);
+                let previous_roots = self.selected_roots.clone();
                 self.selected_roots.retain(|root| root != &path);
+                if self.selected_roots != previous_roots
+                    && let Err(error) = self.persist()
+                {
+                    self.selected_roots = previous_roots;
+                    return Message::LibraryOperationFailed(error.to_string());
+                }
                 self.state_message()
             }
             Message::GetLibraryState => self.state_message(),
@@ -127,7 +240,11 @@ impl LibraryService {
             }
             Message::ScanLibrary => {
                 let result = scan_library(&self.catalog, &self.selected_roots);
-                self.catalog = result.catalog;
+                let previous_catalog = std::mem::replace(&mut self.catalog, result.catalog);
+                if let Err(error) = self.persist() {
+                    self.catalog = previous_catalog;
+                    return Message::LibraryOperationFailed(error.to_string());
+                }
                 let active_entries = self
                     .catalog
                     .entries
@@ -152,6 +269,15 @@ impl LibraryService {
             catalog_entries: self.catalog.entries.len(),
         })
     }
+}
+
+fn library_state_temp_path(state_path: &Path) -> PathBuf {
+    let sequence = NEXT_LIBRARY_STATE_TEMP_FILE.fetch_add(1, Ordering::Relaxed);
+    let mut name = state_path
+        .file_name()
+        .map_or_else(|| "library-state".into(), |name| name.to_os_string());
+    name.push(format!(".{}.{}.tmp", std::process::id(), sequence));
+    state_path.with_file_name(name)
 }
 
 /// Owns the private activation socket for the one running desktop client.
@@ -263,11 +389,40 @@ impl ServerProcess {
         startup_timeout: Duration,
         audio_sink: Option<&str>,
     ) -> io::Result<Self> {
+        Self::start_with_options(executable, socket_path, startup_timeout, audio_sink, None)
+    }
+
+    /// Starts the server with persistent selected roots and scanned library state.
+    pub fn start_with_library_state(
+        executable: &Path,
+        socket_path: &Path,
+        state_path: &Path,
+        startup_timeout: Duration,
+    ) -> io::Result<Self> {
+        Self::start_with_options(
+            executable,
+            socket_path,
+            startup_timeout,
+            None,
+            Some(state_path),
+        )
+    }
+
+    fn start_with_options(
+        executable: &Path,
+        socket_path: &Path,
+        startup_timeout: Duration,
+        audio_sink: Option<&str>,
+        state_path: Option<&Path>,
+    ) -> io::Result<Self> {
         stop_existing_server(socket_path, startup_timeout)?;
         let mut command = Command::new(executable);
         command.arg("--socket").arg(socket_path);
         if let Some(audio_sink) = audio_sink {
             command.arg("--audio-sink").arg(audio_sink);
+        }
+        if let Some(state_path) = state_path {
+            command.arg("--library-state").arg(state_path);
         }
         let mut child = command
             .stdin(Stdio::null())
@@ -426,6 +581,10 @@ impl ServerProcess {
         self.client().play_queue_entry(entry_id)
     }
 
+    pub fn previous_queue_entry(&self) -> io::Result<QueueSnapshot> {
+        self.client().previous_queue_entry()
+    }
+
     pub fn skip_queue_entry(&self) -> io::Result<QueueSnapshot> {
         self.client().skip_queue_entry()
     }
@@ -541,6 +700,10 @@ impl ServerClient {
 
     pub fn play_queue_entry(&self, entry_id: u64) -> io::Result<QueueSnapshot> {
         expect_queue_state(self.request(Message::PlayQueueEntry(entry_id))?)
+    }
+
+    pub fn previous_queue_entry(&self) -> io::Result<QueueSnapshot> {
+        expect_queue_state(self.request(Message::PreviousQueueEntry)?)
     }
 
     pub fn skip_queue_entry(&self) -> io::Result<QueueSnapshot> {
