@@ -64,7 +64,7 @@ Identity reconciliation is conservative: same-path exact matches preserve the en
 7. Compare media file checksums before and after scanning to confirm Kulkán did not modify them.
 8. Relaunch and confirm configured folders, cached tracks, and the saved startup view are restored without an implicit scan; then rescan and confirm the desktop folder chooser still permits access to selected folders.
 9. Verify Scan selected affects only selected folders and Scan all affects every configured folder. Confirm scans show a completion summary/errors, and closing Settings does not cancel a scan.
-10. Browse Artists, Albums, and Songs; verify first-billed artist grouping, Album Artist/release grouping, the No Album placeholder, and the same track-selection/queue actions. Search, navigate away and back, confirm criteria/results persist, and choose Search from results to edit criteria; Clear should leave blank criteria in Search.
+10. Browse Artists, Albums, and Songs; verify first-billed artist grouping, Album Artist/release grouping, the No Album placeholder, and the same track-selection/queue actions. Clear a track's history from Songs and Artist/Album tracks and confirm the same browse view remains. Search, navigate away and back, confirm criteria/results persist, and choose Search from results to edit criteria; Clear should leave blank criteria in Search.
 11. Confirm inactive entries remain visible but cannot be selected or queued. With an empty catalog, confirm the Library explains how to add a folder and scan it.
 12. Confirm a plain click selects one track, a second plain click deselects it, Ctrl-click toggles tracks without clearing other selections, and Shift-click selects the inclusive range from the last anchor.
 

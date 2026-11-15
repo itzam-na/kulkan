@@ -675,6 +675,7 @@ fn build_main_window(application: &gtk::Application, server_state: Rc<RefCell<Se
         sender: sender.clone(),
         status: status.clone(),
         active_search: Rc::clone(&active_search),
+        search_results_active: Rc::clone(&search_results_active),
     };
     let search_form = SearchForm {
         text: basic_search.clone(),
@@ -1102,11 +1103,15 @@ fn build_main_window(application: &gtk::Application, server_state: Rc<RefCell<Se
     let clear_all_state = Rc::clone(&server_state);
     let clear_all_sender = sender.clone();
     let clear_all_search = Rc::clone(&active_search);
+    let clear_all_search_visible = Rc::clone(&search_results_active);
     clear_all_history.connect_clicked(move |_| {
         if let Some(client) = clear_all_state.borrow().client() {
             send_clear_all_history(
                 client,
-                clear_all_search.borrow().clone(),
+                clear_all_search_visible
+                    .get()
+                    .then(|| clear_all_search.borrow().clone())
+                    .flatten(),
                 clear_all_sender.clone(),
             );
         }
@@ -1253,12 +1258,7 @@ fn build_main_window(application: &gtk::Application, server_state: Rc<RefCell<Se
     let all_search_visible = Rc::clone(&search_results_active);
     let all_browse_selection = Rc::clone(&browse_selection);
     add_all.connect_clicked(move |_| {
-        if !all_search_visible.get()
-            && matches!(
-                *all_browse_selection.borrow(),
-                BrowseSelection::View(BrowseView::Artists | BrowseView::Albums)
-            )
-        {
+        if !all_search_visible.get() && is_browse_index(&all_browse_selection.borrow()) {
             return;
         }
         let Some(client) = all_state.borrow().client() else {
@@ -2049,6 +2049,7 @@ struct CatalogActions {
     sender: Sender<UiEvent>,
     status: gtk::Label,
     active_search: Rc<RefCell<Option<SearchCriteria>>>,
+    search_results_active: Rc<Cell<bool>>,
 }
 
 #[derive(Clone)]
@@ -2374,40 +2375,54 @@ fn install_library_events(receiver: Receiver<UiEvent>, ui: LibraryUi) {
                 UiEvent::HistoryCleared(Ok((state, page, threshold, client, criteria))) => {
                     *roots_model.borrow_mut() = state.selected_roots.clone();
                     replace_root_rows(&roots_list, &state.selected_roots);
-                    remember_catalog_entries(&catalog_details, &page.entries);
-                    replace_catalog_rows(&catalog_list, &page.entries, &catalog_entries, &actions);
-                    if let Some(criteria) = criteria {
-                        *active_search.borrow_mut() = Some(criteria.clone());
+                    clear_all_history.set_sensitive(state.catalog_entries > 0);
+                    syncing_threshold.set(true);
+                    played_threshold.set_value(f64::from(threshold));
+                    syncing_threshold.set(false);
+                    if browse.search_view_open.get()
+                        && browse.search_workspace.borrow().open() == SearchPanel::Criteria
+                    {
+                        status.set_text("Play history cleared.");
+                        continue;
+                    }
+                    if browse.search_results_active.get() {
+                        let criteria = criteria.unwrap_or_default();
+                        browse
+                            .search_workspace
+                            .borrow_mut()
+                            .submit(criteria.clone(), page.clone());
+                        browse.search_view_open.set(true);
+                        browse.search_results_active.set(true);
+                        browse.search_criteria_panel.set_visible(false);
+                        browse.panel.set_visible(false);
+                        browse.clear_search_results.set_visible(true);
                         replace_search_chips(&search_chips, &criteria);
+                        *active_search.borrow_mut() = Some(criteria.clone());
+                        remember_catalog_entries(&catalog_details, &page.entries);
+                        replace_catalog_rows(
+                            &catalog_list,
+                            &page.entries,
+                            &catalog_entries,
+                            &actions,
+                        );
                         *catalog_paging.borrow_mut() =
                             page.next_offset.map(|offset| (client, criteria, offset));
                         results_panel.set_visible(true);
                         idle_panel.set_visible(false);
                         no_matches.set_visible(page.entries.is_empty());
-                        catalog_label.set_text("Matching Tracks");
+                        catalog_label.set_text("Search results");
                         add_all.set_label("Add All Matches");
-                        load_more.set_label("Load More Matches");
+                        browse.track_load_more.set_label("Load More Matches");
                         load_more.set_visible(page.next_offset.is_some());
                         load_more.set_sensitive(page.next_offset.is_some());
                     } else {
-                        active_search.borrow_mut().take();
-                        *catalog_paging.borrow_mut() = page
-                            .next_offset
-                            .map(|offset| (client, SearchCriteria::default(), offset));
-                        replace_search_chips(&search_chips, &SearchCriteria::default());
-                        no_matches.set_visible(false);
-                        catalog_label.set_text("Library");
-                        add_all.set_label("Add All Tracks");
-                        load_more.set_label("Load More Tracks");
-                        load_more.set_visible(page.next_offset.is_some());
-                        load_more.set_sensitive(page.next_offset.is_some());
-                        results_panel.set_visible(state.catalog_entries > 0);
-                        idle_panel.set_visible(state.catalog_entries == 0);
+                        begin_browse(
+                            &browse,
+                            client,
+                            browse.selection.borrow().clone(),
+                            actions.sender.clone(),
+                        );
                     }
-                    clear_all_history.set_sensitive(state.catalog_entries > 0);
-                    syncing_threshold.set(true);
-                    played_threshold.set_value(f64::from(threshold));
-                    syncing_threshold.set(false);
                     status.set_text("Play history cleared.");
                 }
                 UiEvent::HistoryCleared(Err(error)) => {
@@ -3328,6 +3343,21 @@ fn browse_selection_title(selection: &BrowseSelection) -> String {
     }
 }
 
+fn is_browse_index(selection: &BrowseSelection) -> bool {
+    matches!(
+        selection,
+        BrowseSelection::View(BrowseView::Artists | BrowseView::Albums)
+    )
+}
+
+fn browse_index_empty_text(selection: &BrowseSelection) -> &'static str {
+    match selection {
+        BrowseSelection::View(BrowseView::Artists) => "No Artists are in the scanned Library.",
+        BrowseSelection::View(BrowseView::Albums) => "No Albums are in the scanned Library.",
+        _ => "No items to browse.",
+    }
+}
+
 fn show_search_panel(browse: &BrowseUi) {
     browse.search_view_open.set(true);
     browse.panel.set_visible(false);
@@ -3428,10 +3458,7 @@ fn begin_browse(
     });
     browse.add_selected.set_sensitive(false);
 
-    let index_view = matches!(
-        &selection,
-        BrowseSelection::View(BrowseView::Artists | BrowseView::Albums)
-    );
+    let index_view = is_browse_index(&selection);
     browse.panel.set_visible(index_view);
     browse.results_panel.set_visible(!index_view);
     browse.idle_panel.set_visible(false);
@@ -3471,10 +3498,7 @@ fn show_browse_page(
         .next_offset
         .map(|next_offset| (client.clone(), selection.clone(), next_offset));
 
-    if matches!(
-        &selection,
-        BrowseSelection::View(BrowseView::Artists | BrowseView::Albums)
-    ) {
+    if is_browse_index(&selection) {
         if offset == 0 {
             *browse.items.borrow_mut() = page.items.clone();
             replace_browse_rows(browse, &page.items, &client);
@@ -3485,13 +3509,7 @@ fn show_browse_page(
         let index = browse.items.borrow().len();
         let list_empty = index == 0;
         browse.heading.set_text(&browse_selection_title(&selection));
-        browse.empty.set_text(
-            if matches!(&selection, BrowseSelection::View(BrowseView::Artists)) {
-                "No Artists are in the scanned Library."
-            } else {
-                "No Albums are in the scanned Library."
-            },
-        );
+        browse.empty.set_text(browse_index_empty_text(&selection));
         browse.empty.set_visible(list_empty);
         browse.panel.set_visible(true);
         browse.results_panel.set_visible(false);
@@ -3735,7 +3753,11 @@ fn render_catalog_row(entry: &LibraryEntry, actions: &CatalogActions) -> gtk::Li
         let clear_actions = actions.clone();
         clear_history.connect_clicked(move |_| {
             if let Some(client) = clear_actions.server_state.borrow().client() {
-                let criteria = clear_actions.active_search.borrow().clone();
+                let criteria = clear_actions
+                    .search_results_active
+                    .get()
+                    .then(|| clear_actions.active_search.borrow().clone())
+                    .flatten();
                 send_clear_entry_history(
                     client,
                     clear_path.clone(),
