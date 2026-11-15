@@ -55,6 +55,19 @@ impl PlaybackService {
     }
 
     fn play(&mut self, path: PathBuf) -> Result<PlaybackSnapshot, String> {
+        self.play_with_state(path, gst::State::Playing, PlaybackStatus::Playing)
+    }
+
+    pub(super) fn start_paused(&mut self, path: PathBuf) -> Result<PlaybackSnapshot, String> {
+        self.play_with_state(path, gst::State::Paused, PlaybackStatus::Paused)
+    }
+
+    fn play_with_state(
+        &mut self,
+        path: PathBuf,
+        gst_state: gst::State,
+        playback_status: PlaybackStatus,
+    ) -> Result<PlaybackSnapshot, String> {
         self.stop_pipeline();
         ensure_gstreamer_initialized()?;
         if !path.is_file() {
@@ -88,12 +101,12 @@ impl PlaybackService {
             pipeline.set_property("audio-sink", sink);
         }
         pipeline
-            .set_state(gst::State::Playing)
+            .set_state(gst_state)
             .map_err(|error| format!("GStreamer could not start playback: {error}"))?;
         self.pipeline = Some(pipeline);
         self.snapshot = PlaybackSnapshot {
             track: Some(path),
-            status: PlaybackStatus::Playing,
+            status: playback_status,
             position_ms: 0,
             duration_ms: None,
             error: None,

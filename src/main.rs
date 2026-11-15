@@ -141,7 +141,7 @@ impl ServerState {
             self.process = None;
         }
         self.process = Some(
-            ServerProcess::start_with_library_state(
+            ServerProcess::start_with_paused_library_state(
                 &self.executable,
                 &self.socket_path,
                 &self.library_state_path,

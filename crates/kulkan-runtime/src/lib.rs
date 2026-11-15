@@ -52,6 +52,24 @@ pub fn serve_with_library_state(
     audio_sink: Option<&str>,
     state_path: Option<&Path>,
 ) -> io::Result<()> {
+    serve_with_library_state_mode(socket_path, audio_sink, state_path, false)
+}
+
+/// Runs the local server, restoring the current queued track in a paused state.
+pub fn serve_with_library_state_paused(
+    socket_path: &Path,
+    audio_sink: Option<&str>,
+    state_path: Option<&Path>,
+) -> io::Result<()> {
+    serve_with_library_state_mode(socket_path, audio_sink, state_path, true)
+}
+
+fn serve_with_library_state_mode(
+    socket_path: &Path,
+    audio_sink: Option<&str>,
+    state_path: Option<&Path>,
+    start_paused: bool,
+) -> io::Result<()> {
     let listener = bind_private_socket(socket_path)?;
     let _cleanup = SocketPathCleanup(socket_path.to_path_buf());
     let mut library = LibraryService::load(state_path)?;
@@ -60,6 +78,7 @@ pub fn serve_with_library_state(
         audio_sink.map(str::to_owned),
         queue_state_path,
         &mut library,
+        start_paused,
     )?;
 
     for incoming in listener.incoming() {
@@ -560,7 +579,14 @@ impl ServerProcess {
         startup_timeout: Duration,
         audio_sink: Option<&str>,
     ) -> io::Result<Self> {
-        Self::start_with_options(executable, socket_path, startup_timeout, audio_sink, None)
+        Self::start_with_options(
+            executable,
+            socket_path,
+            startup_timeout,
+            audio_sink,
+            None,
+            false,
+        )
     }
 
     /// Starts the server with persistent selected roots and scanned library state.
@@ -576,6 +602,41 @@ impl ServerProcess {
             startup_timeout,
             None,
             Some(state_path),
+            false,
+        )
+    }
+
+    /// Starts the server with persistent state, restoring any current queued track paused.
+    pub fn start_with_paused_library_state(
+        executable: &Path,
+        socket_path: &Path,
+        state_path: &Path,
+        startup_timeout: Duration,
+    ) -> io::Result<Self> {
+        Self::start_with_audio_sink_and_paused_library_state(
+            executable,
+            socket_path,
+            state_path,
+            startup_timeout,
+            None,
+        )
+    }
+
+    /// Starts the server with persistent state, an optional audio sink, and paused restoration.
+    pub fn start_with_audio_sink_and_paused_library_state(
+        executable: &Path,
+        socket_path: &Path,
+        state_path: &Path,
+        startup_timeout: Duration,
+        audio_sink: Option<&str>,
+    ) -> io::Result<Self> {
+        Self::start_with_options(
+            executable,
+            socket_path,
+            startup_timeout,
+            audio_sink,
+            Some(state_path),
+            true,
         )
     }
 
@@ -593,6 +654,7 @@ impl ServerProcess {
             startup_timeout,
             Some(audio_sink),
             Some(state_path),
+            false,
         )
     }
 
@@ -602,6 +664,7 @@ impl ServerProcess {
         startup_timeout: Duration,
         audio_sink: Option<&str>,
         state_path: Option<&Path>,
+        start_paused: bool,
     ) -> io::Result<Self> {
         stop_existing_server(socket_path, startup_timeout)?;
         let mut command = Command::new(executable);
@@ -611,6 +674,9 @@ impl ServerProcess {
         }
         if let Some(state_path) = state_path {
             command.arg("--library-state").arg(state_path);
+        }
+        if start_paused {
+            command.arg("--start-paused");
         }
         let mut child = command
             .stdin(Stdio::null())

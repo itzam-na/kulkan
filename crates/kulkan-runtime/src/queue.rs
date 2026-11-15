@@ -56,6 +56,7 @@ impl QueueService {
         audio_sink: Option<String>,
         state_path: Option<PathBuf>,
         library: &mut LibraryService,
+        start_paused: bool,
     ) -> io::Result<Self> {
         let persisted = match state_path.as_deref().map(fs::read) {
             Some(Ok(bytes)) => {
@@ -102,7 +103,8 @@ impl QueueService {
                 .entries
                 .iter()
                 .any(|entry| entry.id == current_entry_id && !entry.failed)
-                && let Err(error) = queue.play_entry(current_entry_id, library)
+                && let Err(error) =
+                    queue.play_entry_with_mode(current_entry_id, library, start_paused)
             {
                 return Err(io::Error::other(error));
             }
@@ -164,7 +166,7 @@ impl QueueService {
                 if let Err(error) = self.observe_current(library) {
                     return Message::QueueOperationFailed(error);
                 }
-                self.advance(AdvanceKind::Skipped, library);
+                self.advance(AdvanceKind::Skipped, library, false);
                 self.queue_state_message(library)
             }
             Message::ReorderQueueEntry { entry_id, position } => {
@@ -500,10 +502,19 @@ impl QueueService {
     }
 
     fn play_entry(&mut self, entry_id: u64, library: &mut LibraryService) -> Result<(), String> {
+        self.play_entry_with_mode(entry_id, library, false)
+    }
+
+    fn play_entry_with_mode(
+        &mut self,
+        entry_id: u64,
+        library: &mut LibraryService,
+        start_paused: bool,
+    ) -> Result<(), String> {
         if !self.entries.iter().any(|entry| entry.id == entry_id) {
             return Err(format!("Queue entry {entry_id} does not exist"));
         }
-        match self.start_entry(entry_id, library) {
+        match self.start_entry(entry_id, library, start_paused) {
             Ok(()) => {
                 self.dirty = true;
                 Ok(())
@@ -513,7 +524,7 @@ impl QueueService {
                     entry.failed = true;
                     self.dirty = true;
                 }
-                self.advance(AdvanceKind::Failed, library);
+                self.advance(AdvanceKind::Failed, library, start_paused);
                 Ok(())
             }
         }
@@ -560,7 +571,7 @@ impl QueueService {
                 if let Some(entry) = self.entries.get(target_index) {
                     let _ = self.play_entry(entry.id, library);
                 } else if self.repeat_mode == RepeatMode::All {
-                    self.advance(AdvanceKind::Skipped, library);
+                    self.advance(AdvanceKind::Skipped, library, false);
                 }
             }
         }
@@ -619,7 +630,7 @@ impl QueueService {
         library: &mut LibraryService,
     ) -> Result<(), String> {
         match state.status {
-            PlaybackStatus::Ended => self.advance(AdvanceKind::Finished, library),
+            PlaybackStatus::Ended => self.advance(AdvanceKind::Finished, library, false),
             PlaybackStatus::Failed => {
                 self.last_failure = state.error.clone();
                 if let Some(current_id) = self.current_entry_id {
@@ -630,14 +641,14 @@ impl QueueService {
                         self.dirty = true;
                     }
                 }
-                self.advance(AdvanceKind::Failed, library);
+                self.advance(AdvanceKind::Failed, library, false);
             }
             _ => {}
         }
         Ok(())
     }
 
-    fn advance(&mut self, kind: AdvanceKind, library: &mut LibraryService) {
+    fn advance(&mut self, kind: AdvanceKind, library: &mut LibraryService, start_paused: bool) {
         if kind == AdvanceKind::Failed && self.repeat_mode == RepeatMode::One {
             self.repeat_mode = RepeatMode::Off;
             self.dirty = true;
@@ -645,7 +656,7 @@ impl QueueService {
 
         if kind == AdvanceKind::Finished && self.repeat_mode == RepeatMode::One {
             if let Some(current_id) = self.current_entry_id
-                && self.start_entry(current_id, library).is_ok()
+                && self.start_entry(current_id, library, start_paused).is_ok()
             {
                 return;
             }
@@ -670,7 +681,7 @@ impl QueueService {
                     continue;
                 }
                 let entry_id = self.entries[index].id;
-                if self.start_entry(entry_id, library).is_ok() {
+                if self.start_entry(entry_id, library, start_paused).is_ok() {
                     return;
                 }
                 if let Some(entry) = self.entries.get_mut(index) {
@@ -714,7 +725,12 @@ impl QueueService {
         }
     }
 
-    fn start_entry(&mut self, entry_id: u64, library: &mut LibraryService) -> Result<(), String> {
+    fn start_entry(
+        &mut self,
+        entry_id: u64,
+        library: &mut LibraryService,
+        start_paused: bool,
+    ) -> Result<(), String> {
         self.observe_current(library)?;
         let entry = self
             .entries
@@ -725,7 +741,15 @@ impl QueueService {
         let track = entry.track.clone();
         self.current_entry_id = Some(entry_id);
         self.dirty = true;
-        match self.playback.handle(Message::PlayTrack(track.clone())) {
+        let response = if start_paused {
+            self.playback
+                .start_paused(track.clone())
+                .map(Message::PlaybackState)
+                .unwrap_or_else(Message::PlaybackOperationFailed)
+        } else {
+            self.playback.handle(Message::PlayTrack(track.clone()))
+        };
+        match response {
             Message::PlaybackState(snapshot) => {
                 self.last_failure = None;
                 self.begin_attempt(track, library, snapshot.position_ms);

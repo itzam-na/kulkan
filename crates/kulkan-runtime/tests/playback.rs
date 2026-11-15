@@ -804,12 +804,57 @@ fn queue_order_settings_and_current_entry_restore_from_the_beginning() {
     assert_eq!(restored.repeat_mode, RepeatMode::All);
     assert!(restored.shuffle);
     assert_eq!(restored.playback.track, Some(current_track));
+    assert_eq!(restored.playback.status, PlaybackStatus::Playing);
     assert!(restored.playback.position_ms < 1_000);
     let appended_after_restore = restored_server.append_to_queue(&tracks[0..1]).unwrap();
     let added_id = appended_after_restore.entries.last().unwrap().id;
     assert!(appended.entries.iter().all(|entry| entry.id != added_id));
     assert_eq!(reordered.entries[1].id, moved_entry_id);
     restored_server.shutdown().unwrap();
+}
+
+#[test]
+fn app_launch_restores_the_current_track_paused_from_the_beginning() {
+    let directory = TestDirectory::new();
+    let root = directory.0.join("music");
+    fs::create_dir(&root).unwrap();
+    let track = root.join("ten-seconds.wav");
+    write_pcm_wav(&track, 80_000);
+    let socket = directory.0.join("server.sock");
+    let state_path = directory.0.join("state/library.json");
+    let executable = PathBuf::from(env!("CARGO_BIN_EXE_kulkan-server"));
+    let mut first_server = ServerProcess::start_with_audio_sink_and_library_state(
+        &executable,
+        &socket,
+        &state_path,
+        Duration::from_secs(5),
+        "fakesink",
+    )
+    .unwrap();
+    first_server.add_library_root(&root).unwrap();
+    first_server.scan_library().unwrap();
+    let queue = first_server
+        .append_to_queue(std::slice::from_ref(&track))
+        .unwrap();
+    first_server.play_queue_entry(queue.entries[0].id).unwrap();
+    wait_for_position(&first_server, 500);
+    first_server.shutdown().unwrap();
+
+    let mut launched_server = ServerProcess::start_with_audio_sink_and_paused_library_state(
+        &executable,
+        &socket,
+        &state_path,
+        Duration::from_secs(5),
+        Some("fakesink"),
+    )
+    .unwrap();
+    let restored = launched_server.queue_state().unwrap();
+
+    assert_eq!(restored.current_entry_id, Some(queue.entries[0].id));
+    assert_eq!(restored.playback.track, Some(track));
+    assert_eq!(restored.playback.status, PlaybackStatus::Paused);
+    assert!(restored.playback.position_ms < 100);
+    launched_server.shutdown().unwrap();
 }
 
 #[test]

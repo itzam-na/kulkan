@@ -5,10 +5,15 @@ fn main() {
     let mut socket_path = None;
     let mut audio_sink = None;
     let mut library_state_path = None;
+    let mut start_paused = false;
     while let Some(option) = arguments.next() {
+        if option == "--start-paused" && !start_paused {
+            start_paused = true;
+            continue;
+        }
         let Some(value) = arguments.next() else {
             eprintln!(
-                "usage: kulkan-server --socket PATH [--audio-sink NAME] [--library-state PATH]"
+                "usage: kulkan-server --socket PATH [--audio-sink NAME] [--library-state PATH] [--start-paused]"
             );
             std::process::exit(2);
         };
@@ -26,7 +31,7 @@ fn main() {
             }
             _ => {
                 eprintln!(
-                    "usage: kulkan-server --socket PATH [--audio-sink NAME] [--library-state PATH]"
+                    "usage: kulkan-server --socket PATH [--audio-sink NAME] [--library-state PATH] [--start-paused]"
                 );
                 std::process::exit(2);
             }
@@ -34,13 +39,16 @@ fn main() {
     }
 
     let Some(socket_path) = socket_path else {
-        eprintln!("usage: kulkan-server --socket PATH [--audio-sink NAME] [--library-state PATH]");
+        eprintln!(
+            "usage: kulkan-server --socket PATH [--audio-sink NAME] [--library-state PATH] [--start-paused]"
+        );
         std::process::exit(2);
     };
     serve(
         &socket_path,
         audio_sink.as_deref(),
         library_state_path.as_deref(),
+        start_paused,
     );
 }
 
@@ -48,10 +56,14 @@ fn serve(
     socket_path: &std::path::Path,
     audio_sink: Option<&str>,
     state_path: Option<&std::path::Path>,
+    start_paused: bool,
 ) {
-    if let Err(error) =
+    let result = if start_paused {
+        kulkan_runtime::serve_with_library_state_paused(socket_path, audio_sink, state_path)
+    } else {
         kulkan_runtime::serve_with_library_state(socket_path, audio_sink, state_path)
-    {
+    };
+    if let Err(error) = result {
         eprintln!("Kulkán server failed: {error}");
         std::process::exit(1);
     }
