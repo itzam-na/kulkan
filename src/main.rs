@@ -714,6 +714,8 @@ fn build_main_window(application: &gtk::Application, server_state: Rc<RefCell<Se
         selection: Rc::clone(&browse_selection),
         paging: Rc::clone(&browse_paging),
         generation: Rc::clone(&browse_generation),
+        search_generation: Rc::clone(&search_generation),
+        navigation_touched: Rc::new(Cell::new(false)),
         results_panel: results_panel.clone(),
         idle_panel: idle_panel.clone(),
         search_criteria_panel: search_criteria_panel.clone(),
@@ -1569,10 +1571,8 @@ fn build_main_window(application: &gtk::Application, server_state: Rc<RefCell<Se
     let scan_state = Rc::clone(&server_state);
     let scan_sender = sender.clone();
     let scan_selected_ui = scan_ui.clone();
-    let scan_search = Rc::clone(&active_search);
     let scan_roots_list = roots_list.clone();
     let scan_roots_model = Rc::clone(&roots_model);
-    let scan_selected_search_visible = Rc::clone(&browse_ui.search_results_active);
     scan_selected.connect_clicked(move |_| {
         let folders = selected_library_folders(&scan_roots_list, &scan_roots_model);
         if folders.is_empty() {
@@ -1591,9 +1591,6 @@ fn build_main_window(application: &gtk::Application, server_state: Rc<RefCell<Se
             client,
             Some(folders),
             scan_sender.clone(),
-            scan_selected_search_visible
-                .get()
-                .then(|| scan_search.borrow().clone().unwrap_or_default()),
             &scan_selected_ui,
         );
     });
@@ -1601,8 +1598,6 @@ fn build_main_window(application: &gtk::Application, server_state: Rc<RefCell<Se
     let scan_all_state = Rc::clone(&server_state);
     let scan_all_sender = sender.clone();
     let scan_all_ui = scan_ui.clone();
-    let scan_all_search = Rc::clone(&active_search);
-    let scan_all_search_visible = Rc::clone(&browse_ui.search_results_active);
     scan_all.connect_clicked(move |_| {
         let Some(client) = scan_all_state.borrow().client() else {
             scan_all_ui
@@ -1613,15 +1608,7 @@ fn build_main_window(application: &gtk::Application, server_state: Rc<RefCell<Se
                 .set_text("Server unavailable. Select Retry.");
             return;
         };
-        start_catalog_scan(
-            client,
-            None,
-            scan_all_sender.clone(),
-            scan_all_search_visible
-                .get()
-                .then(|| scan_all_search.borrow().clone().unwrap_or_default()),
-            &scan_all_ui,
-        );
+        start_catalog_scan(client, None, scan_all_sender.clone(), &scan_all_ui);
     });
 
     let paging_for_button = Rc::clone(&catalog_paging);
@@ -1912,17 +1899,7 @@ enum UiEvent {
     StateImported(Result<(LibraryState, CatalogPage, u8, QueueSnapshot), String>),
     StateReset(Result<(LibraryState, CatalogPage, u8, QueueSnapshot), String>),
     Recovery(Result<ServerProcess, String>),
-    Catalog(
-        Result<
-            (
-                ScanSummary,
-                CatalogPage,
-                ServerClient,
-                Option<SearchCriteria>,
-            ),
-            String,
-        >,
-    ),
+    Catalog(Result<(ScanSummary, ServerClient), String>),
     Search {
         result: Result<(CatalogPage, ServerClient, SearchCriteria), String>,
         generation: u64,
@@ -2023,6 +2000,8 @@ struct BrowseUi {
     selection: Rc<RefCell<BrowseSelection>>,
     paging: BrowsePaging,
     generation: Rc<Cell<u64>>,
+    search_generation: Rc<Cell<u64>>,
+    navigation_touched: Rc<Cell<bool>>,
     results_panel: gtk::Box,
     idle_panel: gtk::Box,
     search_criteria_panel: gtk::Box,
@@ -2330,12 +2309,16 @@ fn install_library_events(receiver: Receiver<UiEvent>, ui: LibraryUi) {
                         "Restored {} cached tracks. Open Settings to scan folders.",
                         state.catalog_entries
                     ));
-                    begin_browse(
-                        &browse,
-                        client,
-                        BrowseSelection::View(state.startup_view),
-                        actions.sender.clone(),
-                    );
+                    if browse.search_view_open.get() {
+                        show_search_panel(&browse);
+                    } else {
+                        let selection = if browse.navigation_touched.get() {
+                            browse.selection.borrow().clone()
+                        } else {
+                            BrowseSelection::View(state.startup_view)
+                        };
+                        begin_browse(&browse, client, selection, actions.sender.clone());
+                    }
                 }
                 UiEvent::RestoredLibrary(Err(error)) => {
                     status.set_text(&format!("Could not restore library: {error}"));
@@ -2647,7 +2630,7 @@ fn install_library_events(receiver: Receiver<UiEvent>, ui: LibraryUi) {
                     status.set_text(&format!("Library operation failed: {error}"));
                     settings_status.set_text(&format!("Library operation failed: {error}"));
                 }
-                UiEvent::Catalog(Ok((summary, page, client, criteria))) => {
+                UiEvent::Catalog(Ok((summary, client))) => {
                     scan_in_progress.set(false);
                     set_server_controls_sensitive(
                         &add_root,
@@ -2661,42 +2644,18 @@ fn install_library_events(receiver: Receiver<UiEvent>, ui: LibraryUi) {
                     let scan_status = scan_status_text(&summary);
                     status.set_text(&scan_status);
                     settings_status.set_text(&scan_status);
-                    if let Some(criteria) = criteria {
-                        browse
-                            .search_workspace
-                            .borrow_mut()
-                            .submit(criteria.clone(), page.clone());
-                        browse.search_view_open.set(true);
-                        browse.search_results_active.set(true);
-                        browse.panel.set_visible(false);
-                        browse.search_criteria_panel.set_visible(false);
-                        browse.back.set_visible(false);
-                        browse.clear_search_results.set_visible(true);
-                        *active_search.borrow_mut() = Some(criteria.clone());
-                        replace_search_chips(&search_chips, &criteria);
-                        remember_catalog_entries(&catalog_details, &page.entries);
-                        replace_catalog_rows(
-                            &catalog_list,
-                            &page.entries,
-                            &catalog_entries,
-                            &actions,
-                        );
-                        *catalog_paging.borrow_mut() =
-                            page.next_offset.map(|offset| (client, criteria, offset));
-                        results_panel.set_visible(true);
-                        idle_panel.set_visible(false);
-                        no_matches.set_visible(page.entries.is_empty());
-                        catalog_label.set_text("Matching Tracks");
-                        add_all.set_label("Add All Matches");
-                        load_more.set_label("Load More Matches");
-                        load_more.set_visible(page.next_offset.is_some());
-                        load_more.set_sensitive(page.next_offset.is_some());
+                    clear_all_history
+                        .set_sensitive(summary.active_entries + summary.inactive_entries > 0);
+                    if browse.search_results_active.get() {
+                        let criteria = browse.search_workspace.borrow().criteria().clone();
+                        let generation = search_generation.get().wrapping_add(1);
+                        search_generation.set(generation);
+                        send_search(client, criteria, generation, actions.sender.clone());
                     } else if browse.search_view_open.get()
                         && browse.search_workspace.borrow().open() == SearchPanel::Criteria
                     {
                         status.set_text("Scan complete. Search criteria are ready to apply.");
                     } else {
-                        browse.clear_search_results.set_visible(false);
                         begin_browse(
                             &browse,
                             client,
@@ -2704,8 +2663,6 @@ fn install_library_events(receiver: Receiver<UiEvent>, ui: LibraryUi) {
                             actions.sender.clone(),
                         );
                     }
-                    clear_all_history
-                        .set_sensitive(summary.active_entries + summary.inactive_entries > 0);
                 }
                 UiEvent::Catalog(Err(error)) => {
                     scan_in_progress.set(false);
@@ -3359,7 +3316,11 @@ fn browse_index_empty_text(selection: &BrowseSelection) -> &'static str {
 }
 
 fn show_search_panel(browse: &BrowseUi) {
+    browse.navigation_touched.set(true);
     browse.search_view_open.set(true);
+    browse
+        .generation
+        .set(browse.generation.get().wrapping_add(1));
     browse.panel.set_visible(false);
     browse.idle_panel.set_visible(false);
     browse.back.set_visible(false);
@@ -3434,6 +3395,7 @@ fn begin_browse(
     selection: BrowseSelection,
     sender: Sender<UiEvent>,
 ) {
+    browse.navigation_touched.set(true);
     *browse.selection.borrow_mut() = selection.clone();
     browse.search_results_active.set(false);
     browse.search_view_open.set(false);
@@ -3443,6 +3405,9 @@ fn begin_browse(
     browse.paging.borrow_mut().take();
     let generation = browse.generation.get().wrapping_add(1);
     browse.generation.set(generation);
+    browse
+        .search_generation
+        .set(browse.search_generation.get().wrapping_add(1));
     browse.load_more.set_visible(false);
     browse.load_more.set_sensitive(false);
     browse.track_load_more.set_visible(false);
@@ -3923,7 +3888,6 @@ fn start_catalog_scan(
     client: ServerClient,
     folders: Option<Vec<PathBuf>>,
     sender: Sender<UiEvent>,
-    criteria: Option<SearchCriteria>,
     ui: &ScanUi,
 ) {
     ui.in_progress.set(true);
@@ -3940,7 +3904,7 @@ fn start_catalog_scan(
     ui.status.set_text(status_text);
     ui.settings_status.set_text(status_text);
     thread::spawn(move || {
-        let result = read_scanned_catalog(&client, folders.as_deref(), criteria);
+        let result = read_scanned_catalog(&client, folders.as_deref());
         let _ = sender.send(UiEvent::Catalog(result));
     });
 }
@@ -3948,27 +3912,13 @@ fn start_catalog_scan(
 fn read_scanned_catalog(
     client: &ServerClient,
     folders: Option<&[PathBuf]>,
-    criteria: Option<SearchCriteria>,
-) -> Result<
-    (
-        ScanSummary,
-        CatalogPage,
-        ServerClient,
-        Option<SearchCriteria>,
-    ),
-    String,
-> {
+) -> Result<(ScanSummary, ServerClient), String> {
     let summary = match folders {
         Some(folders) => client.scan_library_selected(folders),
         None => client.scan_library(),
     }
     .map_err(|error| error.to_string())?;
-    let all_tracks = SearchCriteria::default();
-    let page_criteria = criteria.as_ref().unwrap_or(&all_tracks);
-    let page = client
-        .search_catalog(page_criteria, 0, 32)
-        .map_err(|error| error.to_string())?;
-    Ok((summary, page, client.clone(), criteria))
+    Ok((summary, client.clone()))
 }
 
 fn send_search(
