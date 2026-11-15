@@ -16,14 +16,16 @@ The server restores and persists configured Library folders, the scanned catalog
 
 ## Build and test
 
-For a normal Rust development environment with GTK 4 development files installed:
+For a normal Rust development environment with GTK 4 development files installed, use the repository Makefile:
 
 ```sh
-cargo fmt --all -- --check
-cargo test --workspace --locked
-cargo clippy --workspace --all-targets --locked -- -D warnings
-cargo build --workspace --release --locked
+make fmt
+make test
+make clippy
+make release
 ```
+
+Run `make check` for all checks, `make run` for a debug launch, `make run-release` for a release launch, and `make launch` to launch an installed copy from `PATH`. Use `make help` to list all targets.
 
 A tracked pre-commit hook is available in `.githooks/pre-commit`. Enable it with:
 
@@ -33,10 +35,10 @@ git config core.hooksPath .githooks
 
 ## GTK smoke test
 
-Run the real client in an isolated XDG profile and a headless Weston/Xwayland session:
+Run the real client in an isolated XDG profile and a headless Weston/Xwayland session through Make:
 
 ```sh
-./scripts/gtk-smoke-test.sh
+make gtk-smoke-test
 ```
 
 The smoke test exercises Search submission, Browse navigation, restoring cached Search results, editing criteria, and Clear. It uses an empty Library and does not read or scan the listener's Library. It requires `weston`, `dbus-run-session`, `xdotool`, ImageMagick's `import`, and `tesseract`.

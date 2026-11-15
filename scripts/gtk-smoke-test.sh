@@ -96,7 +96,7 @@ for tool in cargo dbus-run-session weston xdotool import tesseract python3; do
   }
 done
 
-cargo build --workspace --locked
+make build
 
 smoke_root=$(mktemp -d "${TMPDIR:-/tmp}/kulkan-gtk-smoke.XXXXXX")
 mkdir -p \

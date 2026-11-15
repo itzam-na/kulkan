@@ -10,19 +10,19 @@ On x86-64 Arch Linux, build and install the local source package:
 sudo pacman -S --needed base-devel git
 git clone https://github.com/itzam-na/kulkan.git
 cd kulkan
-makepkg --syncdeps --cleanbuild
-sudo pacman -U ./kulkan-0.1.1-1-x86_64.pkg.tar.zst
+make package-install
 ```
 
-Run `makepkg` as your regular user, not with `sudo`. The package is built locally from source; it is not a prebuilt release or an AUR package.
-The `PKGBUILD` keeps its work tree and source cache in `.makepkg-build/`, separate from the source checkout.
+Run `make package-install` as your regular user, not with `sudo`; it builds the package, syncs dependencies as needed, and uses `sudo` for pacman. Use `make package` to build without installing. The package is built locally from source; it is not a prebuilt release or an AUR package. The `PKGBUILD` keeps its work tree and source cache in `.makepkg-build/`, separate from the source checkout. Remove it with `make package-uninstall`.
 
-On other Linux distributions, build with Cargo and run the player:
+On other Linux distributions, build and run the player with Make:
 
 ```sh
-cargo build --release
-./target/release/kulkan
+make release
+make run-release
 ```
+
+After installing from the source checkout, launch the installed app with `make launch` or from the desktop application menu.
 
 The application works offline and does not modify media files. App-owned state, including configured Library folders, play history, preferences, and Queue, stays local.
 

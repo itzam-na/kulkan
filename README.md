@@ -19,47 +19,56 @@ MP3, PCM WAV, FLAC, Ogg Vorbis, and Ogg Opus are supported. AAC/M4A is not curre
 
 ## Arch Linux (makepkg)
 
-The repository includes a `PKGBUILD` that builds Kulkán from source for x86-64 Arch Linux. Build and install the package from a checkout:
+The repository includes a `PKGBUILD` that builds Kulkán from source for x86-64 Arch Linux. Use the Makefile to build and install the package from a checkout:
 
 ```sh
 sudo pacman -S --needed base-devel git
 git clone https://github.com/itzam-na/kulkan.git
 cd kulkan
-makepkg --syncdeps --cleanbuild
-sudo pacman -U ./kulkan-0.1.1-1-x86_64.pkg.tar.zst
+make package-install
 ```
 
-Run `makepkg` as your regular user, not with `sudo`. The recipe installs build/runtime dependencies as needed; the resulting package is built locally from source and is not published as a binary release or AUR package.
-The PKGBUILD keeps makepkg's work tree and source cache under the ignored `.makepkg-build/` directory, so `--cleanbuild` does not touch the checkout's Rust `src/` files.
+Run `make package-install` as your regular user, not with `sudo`; it builds the package, syncs dependencies as needed, and uses `sudo` for pacman. Use `make package` to build without installing. The resulting package is built locally from source and is not published as a binary release or AUR package. The PKGBUILD keeps makepkg's work tree and source cache under the ignored `.makepkg-build/` directory.
+Remove the installed package with `make package-uninstall`.
 
 ## Build from source
 
-Build with Cargo and run the player:
+Build and launch the release app:
 
 ```sh
-cargo build --release
-./target/release/kulkan
+make release
+make run-release
 ```
 
-## Run
+For a development build, use `make build` and `make run`.
 
-After installation, start the player with:
+## Install from source
+
+After `make release`, install binaries and desktop assets under `/usr/local`:
 
 ```sh
-kulkan
+sudo make install
+```
+
+Use `make install-user` to install under `~/.local` without elevated privileges. Remove a source installation with `sudo make uninstall` or `make uninstall-user`, respectively. Override `PREFIX` to choose another prefix; `DESTDIR` is available for staged installs.
+
+After installation, launch the app with:
+
+```sh
+make launch
 ```
 
 ## Development
 
-With Rust, GTK 4, and GStreamer development packages installed:
+With Rust, GTK 4, and GStreamer development packages installed, run the standard checks through Make:
 
 ```sh
-cargo fmt --all -- --check
-cargo test --workspace --locked
-cargo clippy --workspace --all-targets --locked -- -D warnings
+make fmt
+make test
+make clippy
 ```
 
-See the [user guide](docs/user-guide.md), [developer guide](docs/development.md), and product [SPEC](SPEC.md). Domain terms are in [`GLOSSARY.md`](GLOSSARY.md).
+Use `make check` to run all three checks, `make gtk-smoke-test` for the isolated headless UI smoke test, `make clean` to remove build artifacts, or `make help` to list workflows. See the [user guide](docs/user-guide.md), [developer guide](docs/development.md), and product [SPEC](SPEC.md). Domain terms are in [`GLOSSARY.md`](GLOSSARY.md).
 
 ## License
 
