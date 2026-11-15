@@ -111,9 +111,9 @@ package: ## Build the local Arch Linux package (run as a regular user)
 	$(MAKEPKG) --syncdeps --cleanbuild
 
 package-install: package ## Build and install the latest local Arch package
-	@set -e; package_file="$$(find . -maxdepth 1 -type f -name 'kulkan-*.pkg.tar.zst' -printf '%T@ %f\n' | sort -nr | head -n 1 | cut -d ' ' -f 2-)"; \
+	@set -e; package_file="$$($(MAKEPKG) --packagelist | grep -E '(^|/)kulkan-[0-9][^/]*\.pkg\.tar\.' | head -n 1)"; \
 	if [ -z "$$package_file" ]; then echo "No Kulkán package was produced." >&2; exit 1; fi; \
-	$(SUDO) pacman -U "./$$package_file"
+	$(SUDO) pacman -U "$$package_file"
 
 package-uninstall: ## Remove the installed Arch Linux package
 	$(SUDO) pacman -Rns kulkan

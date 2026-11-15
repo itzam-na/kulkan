@@ -29,7 +29,7 @@ prepare() {
   cd "$srcdir/$pkgname"
   export CARGO_HOME="$srcdir/cargo-home"
   export RUSTUP_TOOLCHAIN=stable
-  make fetch CARGO_FETCH_FLAGS=--frozen TARGET="${CARCH}-unknown-linux-gnu"
+  make fetch CARGO_FETCH_FLAGS=--locked TARGET="${CARCH}-unknown-linux-gnu"
 }
 
 build() {
