@@ -19,7 +19,8 @@ pub use kulkan_ipc::{
 };
 pub use kulkan_library::SearchCriteria;
 use kulkan_library::{
-    Catalog, CatalogPage, LibraryState, ScanSummary, scan_library_selected, search_catalog,
+    BrowsePage, BrowseSelection, BrowseView, Catalog, CatalogPage, LibraryState, ScanSummary,
+    browse_catalog, scan_library_selected, search_catalog,
 };
 use serde::{Deserialize, Serialize};
 
@@ -29,7 +30,7 @@ mod queue;
 
 const MAX_CATALOG_PAGE_SIZE: usize = 32;
 const LIBRARY_REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
-const LIBRARY_STATE_VERSION: u16 = 2;
+const LIBRARY_STATE_VERSION: u16 = 3;
 const DEFAULT_PLAYED_THRESHOLD_PERCENT: u8 = 75;
 static NEXT_LIBRARY_STATE_TEMP_FILE: AtomicU64 = AtomicU64::new(0);
 
@@ -139,6 +140,7 @@ struct LibraryService {
     selected_roots: Vec<PathBuf>,
     catalog: Catalog,
     played_threshold_percent: u8,
+    startup_view: BrowseView,
     state_path: Option<PathBuf>,
 }
 
@@ -149,6 +151,8 @@ struct PersistedLibraryState {
     catalog: Catalog,
     #[serde(default = "default_played_threshold_percent")]
     played_threshold_percent: u8,
+    #[serde(default)]
+    startup_view: BrowseView,
 }
 
 fn default_played_threshold_percent() -> u8 {
@@ -162,6 +166,7 @@ impl LibraryService {
                 selected_roots: Vec::new(),
                 catalog: Catalog::default(),
                 played_threshold_percent: DEFAULT_PLAYED_THRESHOLD_PERCENT,
+                startup_view: BrowseView::default(),
                 state_path: None,
             });
         };
@@ -177,7 +182,7 @@ impl LibraryService {
                             ),
                         )
                     })?;
-                if !matches!(state.version, 1 | LIBRARY_STATE_VERSION) {
+                if !(1..=LIBRARY_STATE_VERSION).contains(&state.version) {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidData,
                         format!(
@@ -191,6 +196,7 @@ impl LibraryService {
                     selected_roots: state.selected_roots,
                     catalog: state.catalog,
                     played_threshold_percent: state.played_threshold_percent,
+                    startup_view: state.startup_view,
                     state_path: Some(state_path.to_path_buf()),
                 })
             }
@@ -198,6 +204,7 @@ impl LibraryService {
                 selected_roots: Vec::new(),
                 catalog: Catalog::default(),
                 played_threshold_percent: DEFAULT_PLAYED_THRESHOLD_PERCENT,
+                startup_view: BrowseView::default(),
                 state_path: Some(state_path.to_path_buf()),
             }),
             Err(error) => Err(error),
@@ -219,6 +226,7 @@ impl LibraryService {
             selected_roots: self.selected_roots.clone(),
             catalog: self.catalog.clone(),
             played_threshold_percent: self.played_threshold_percent,
+            startup_view: self.startup_view,
         })
         .map_err(|error| io::Error::other(format!("could not encode library state: {error}")))?;
         let temp_path = library_state_temp_path(state_path);
@@ -245,11 +253,12 @@ impl LibraryService {
             selected_roots: self.selected_roots.clone(),
             catalog: self.catalog.clone(),
             played_threshold_percent: self.played_threshold_percent,
+            startup_view: self.startup_view,
         }
     }
 
     fn replace_persisted_state(&mut self, mut state: PersistedLibraryState) -> io::Result<()> {
-        if !matches!(state.version, 1 | LIBRARY_STATE_VERSION) {
+        if !(1..=LIBRARY_STATE_VERSION).contains(&state.version) {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 format!("unsupported library state version {}", state.version),
@@ -266,10 +275,12 @@ impl LibraryService {
         self.selected_roots = state.selected_roots;
         self.catalog = state.catalog;
         self.played_threshold_percent = state.played_threshold_percent;
+        self.startup_view = state.startup_view;
         if let Err(error) = self.persist() {
             self.selected_roots = old_state.selected_roots;
             self.catalog = old_state.catalog;
             self.played_threshold_percent = old_state.played_threshold_percent;
+            self.startup_view = old_state.startup_view;
             return Err(error);
         }
         Ok(())
@@ -280,10 +291,12 @@ impl LibraryService {
         self.selected_roots.clear();
         self.catalog = Catalog::default();
         self.played_threshold_percent = DEFAULT_PLAYED_THRESHOLD_PERCENT;
+        self.startup_view = BrowseView::default();
         if let Err(error) = self.persist() {
             self.selected_roots = old_state.selected_roots;
             self.catalog = old_state.catalog;
             self.played_threshold_percent = old_state.played_threshold_percent;
+            self.startup_view = old_state.startup_view;
             return Err(error);
         }
         Ok(())
@@ -321,6 +334,15 @@ impl LibraryService {
                 self.state_message()
             }
             Message::GetLibraryState => self.state_message(),
+            Message::SetStartupView(view) => {
+                let previous = self.startup_view;
+                self.startup_view = view;
+                if let Err(error) = self.persist() {
+                    self.startup_view = previous;
+                    return Message::LibraryOperationFailed(error.to_string());
+                }
+                self.state_message()
+            }
             Message::GetPlayedThreshold => Message::PlayedThreshold(self.played_threshold_percent),
             Message::SetPlayedThreshold(percent) => {
                 if !(1..=100).contains(&percent) {
@@ -356,6 +378,21 @@ impl LibraryService {
                     entries: self.catalog.entries[start..end].to_vec(),
                     next_offset: (end < self.catalog.entries.len()).then_some(end),
                 })
+            }
+            Message::BrowseCatalog {
+                selection,
+                offset,
+                limit,
+            } => {
+                if limit == 0 || limit > MAX_CATALOG_PAGE_SIZE {
+                    return Message::LibraryOperationFailed(format!(
+                        "browse page size must be between 1 and {MAX_CATALOG_PAGE_SIZE}"
+                    ));
+                }
+                match browse_catalog(&self.catalog, selection, offset, limit) {
+                    Ok(page) => Message::BrowsePage(page),
+                    Err(error) => Message::LibraryOperationFailed(error),
+                }
             }
             Message::SearchCatalog {
                 criteria,
@@ -435,6 +472,7 @@ impl LibraryService {
         LibraryState {
             selected_roots: self.selected_roots.clone(),
             catalog_entries: self.catalog.entries.len(),
+            startup_view: self.startup_view,
         }
     }
 
@@ -856,6 +894,21 @@ impl ServerProcess {
         self.client().catalog_page(offset, limit)
     }
 
+    /// Returns one bounded page of Artists, Albums, Songs, or selected Artist/Album tracks.
+    pub fn browse_catalog(
+        &self,
+        selection: BrowseSelection,
+        offset: usize,
+        limit: usize,
+    ) -> io::Result<BrowsePage> {
+        self.client().browse_catalog(selection, offset, limit)
+    }
+
+    /// Persists the Library browse view opened on the next client launch.
+    pub fn set_startup_view(&self, view: BrowseView) -> io::Result<LibraryState> {
+        self.client().set_startup_view(view)
+    }
+
     pub fn search_catalog(
         &self,
         criteria: &SearchCriteria,
@@ -986,6 +1039,10 @@ impl ServerClient {
         expect_library_state(self.request(Message::GetLibraryState)?)
     }
 
+    pub fn set_startup_view(&self, view: BrowseView) -> io::Result<LibraryState> {
+        expect_library_state(self.request(Message::SetStartupView(view))?)
+    }
+
     pub fn played_threshold(&self) -> io::Result<u8> {
         match self.request(Message::GetPlayedThreshold)? {
             Message::PlayedThreshold(percent) => Ok(percent),
@@ -1037,6 +1094,23 @@ impl ServerClient {
     pub fn catalog_page(&self, offset: usize, limit: usize) -> io::Result<CatalogPage> {
         match self.request(Message::GetCatalogPage { offset, limit })? {
             Message::CatalogPage(page) => Ok(page),
+            Message::LibraryOperationFailed(message) => Err(io::Error::other(message)),
+            response => unexpected_library_response(response),
+        }
+    }
+
+    pub fn browse_catalog(
+        &self,
+        selection: BrowseSelection,
+        offset: usize,
+        limit: usize,
+    ) -> io::Result<BrowsePage> {
+        match self.request(Message::BrowseCatalog {
+            selection,
+            offset,
+            limit,
+        })? {
+            Message::BrowsePage(page) => Ok(page),
             Message::LibraryOperationFailed(message) => Err(io::Error::other(message)),
             response => unexpected_library_response(response),
         }

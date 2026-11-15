@@ -109,6 +109,95 @@ fn selected_roots_and_scanned_tracks_survive_server_relaunch_without_rescanning(
 }
 
 #[test]
+fn catalog_browsing_and_startup_view_work_through_the_child_server() {
+    let directory = TestDirectory::new();
+    let root = directory.0.join("music");
+    fs::create_dir(&root).unwrap();
+    write_tagged_pcm_wav(&root.join("one.wav"));
+    write_tagged_pcm_wav(&root.join("two.wav"));
+    let socket_path = directory.0.join("server.sock");
+    let state_path = directory.0.join("state/library.json");
+    let executable = PathBuf::from(env!("CARGO_BIN_EXE_kulkan-server"));
+    let mut server = ServerProcess::start_with_library_state(
+        &executable,
+        &socket_path,
+        &state_path,
+        Duration::from_secs(2),
+    )
+    .unwrap();
+    server.add_library_root(&root).unwrap();
+    server.scan_library().unwrap();
+    server
+        .set_startup_view(kulkan_library::BrowseView::Artists)
+        .unwrap();
+
+    let artists = server
+        .browse_catalog(
+            kulkan_library::BrowseSelection::View(kulkan_library::BrowseView::Artists),
+            0,
+            10,
+        )
+        .unwrap();
+    assert_eq!(
+        artists.items,
+        vec![kulkan_library::BrowseItem::Artist {
+            name: None,
+            track_count: 2,
+        }]
+    );
+    let albums = server
+        .browse_catalog(
+            kulkan_library::BrowseSelection::View(kulkan_library::BrowseView::Albums),
+            0,
+            10,
+        )
+        .unwrap();
+    assert_eq!(
+        albums.items,
+        vec![kulkan_library::BrowseItem::Album {
+            key: kulkan_library::AlbumKey::NoAlbum,
+            track_count: 2,
+        }]
+    );
+    let songs = server
+        .browse_catalog(
+            kulkan_library::BrowseSelection::View(kulkan_library::BrowseView::Songs),
+            0,
+            10,
+        )
+        .unwrap();
+    assert_eq!(songs.items.len(), 2);
+    assert!(songs.items.iter().all(|item| matches!(
+        item,
+        kulkan_library::BrowseItem::Track(entry) if entry.active
+    )));
+    fs::create_dir(directory.0.join("backup")).unwrap();
+    let export_path = directory.0.join("backup/app-state.json");
+    server.export_app_state(&export_path).unwrap();
+    server
+        .set_startup_view(kulkan_library::BrowseView::Songs)
+        .unwrap();
+    assert_eq!(
+        server.import_app_state(&export_path).unwrap().startup_view,
+        kulkan_library::BrowseView::Artists
+    );
+    server.shutdown().unwrap();
+
+    let mut restored_server = ServerProcess::start_with_library_state(
+        &executable,
+        &socket_path,
+        &state_path,
+        Duration::from_secs(2),
+    )
+    .unwrap();
+    assert_eq!(
+        restored_server.library_state().unwrap().startup_view,
+        kulkan_library::BrowseView::Artists
+    );
+    restored_server.shutdown().unwrap();
+}
+
+#[test]
 fn a_selected_root_survives_relaunch_before_its_first_scan() {
     let directory = TestDirectory::new();
     let root = directory.0.join("music");

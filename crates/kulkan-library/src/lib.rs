@@ -13,8 +13,10 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
 
+mod browse;
 mod search;
 
+pub use browse::{AlbumKey, BrowseItem, BrowsePage, BrowseSelection, BrowseView, browse_catalog};
 pub use search::{NumericFilter, SearchCriteria, TextFilter, search_catalog};
 
 /// One original metadata value and the format field it came from.
@@ -100,6 +102,8 @@ pub struct MediaError {
 pub struct LibraryState {
     pub selected_roots: Vec<PathBuf>,
     pub catalog_entries: usize,
+    #[serde(default)]
+    pub startup_view: BrowseView,
 }
 
 /// Summary of an explicit scan, without transferring the full catalog in one IPC frame.

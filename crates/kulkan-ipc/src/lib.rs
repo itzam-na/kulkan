@@ -6,11 +6,13 @@ use std::os::unix::fs::{FileTypeExt, MetadataExt, PermissionsExt};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 
-use kulkan_library::{CatalogPage, LibraryState, ScanSummary, SearchCriteria};
+use kulkan_library::{
+    BrowsePage, BrowseSelection, BrowseView, CatalogPage, LibraryState, ScanSummary, SearchCriteria,
+};
 use serde::{Deserialize, Serialize};
 
 /// The current wire-protocol version understood by Kulkán clients and servers.
-pub const CURRENT_PROTOCOL_VERSION: u16 = 7;
+pub const CURRENT_PROTOCOL_VERSION: u16 = 8;
 
 /// Maximum JSON envelope size accepted on the local socket.
 pub const MAX_FRAME_SIZE: usize = 64 * 1024;
@@ -31,8 +33,14 @@ pub enum Message {
         offset: usize,
         limit: usize,
     },
+    BrowseCatalog {
+        selection: BrowseSelection,
+        offset: usize,
+        limit: usize,
+    },
     ScanLibrary,
     ScanLibrarySelected(Vec<PathBuf>),
+    SetStartupView(BrowseView),
     GetPlayedThreshold,
     SetPlayedThreshold(u8),
     PlayedThreshold(u8),
@@ -53,6 +61,7 @@ pub enum Message {
     },
     LibraryState(LibraryState),
     CatalogPage(CatalogPage),
+    BrowsePage(BrowsePage),
     ScanSummary(ScanSummary),
     LibraryOperationFailed(String),
     PlayTrack(PathBuf),
