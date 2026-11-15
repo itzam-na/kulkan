@@ -16,7 +16,7 @@ The core experience must work offline. The application is for personal use and m
 - Video, streaming services, remote clients, multi-user access, accounts, cloud services, telemetry, or online-dependent core behavior.
 - Automatic DJ/autoplay behavior outside the listener-managed queue.
 - Advanced OR/grouped criteria or saved rule sets.
-- AAC/M4A support and packaged distribution.
+- AAC/M4A support and prebuilt package distribution.
 
 ## 2. Architecture and technology constraints
 
@@ -25,14 +25,14 @@ The core experience must work offline. The application is for personal use and m
 - Do not use Electron, Java, or a web runtime as the application shell.
 - Run one application/server instance per user. The client starts the server as needed and shuts it down when the client exits; supervision follows [Server recovery](#10-local-state-and-server-recovery).
 - Use a versioned, length-delimited IPC protocol over the private socket; restrict socket-directory permissions and validate the peer.
-- V1 is built from source; no packaged distribution is provided. The client and child server run as the same user, communicate over a private per-user Unix socket, and the listener selects Library folders through GTK's folder chooser.
+- V1 is built from source. A source PKGBUILD supports local x86-64 Arch Linux package builds; no prebuilt package distribution is provided. The client and child server run as the same user, communicate over a private per-user Unix socket, and the listener selects Library folders through GTK's folder chooser.
 - The app performs no network operations and never modifies media files.
 
 ## 3. Supported platforms and media
 
 ### Linux target
 
-V1 targets Linux and is built from source. No packaged distribution or distro compatibility claim is made.
+V1 targets Linux and is built from source. The repository provides a PKGBUILD for local x86-64 Arch Linux builds; other distributions may build from source, but no broader distro compatibility claim is made.
 
 ### Supported audio formats
 

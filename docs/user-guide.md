@@ -4,7 +4,19 @@ This guide describes Kulkán's approved library, playback, search, queue, play-h
 
 ## Install and launch
 
-Build Kulkán from source with Cargo, then launch it:
+On x86-64 Arch Linux, build and install the local source package:
+
+```sh
+sudo pacman -S --needed base-devel git
+git clone https://github.com/itzam-na/kulkan.git
+cd kulkan
+makepkg --syncdeps --cleanbuild
+sudo pacman -U ./kulkan-0.1.1-1-x86_64.pkg.tar.zst
+```
+
+Run `makepkg` as your regular user, not with `sudo`. The package is built locally from source; it is not a prebuilt release or an AUR package.
+
+On other Linux distributions, build with Cargo and run the player:
 
 ```sh
 cargo build --release

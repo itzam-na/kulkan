@@ -17,6 +17,20 @@ Kulkán reads media metadata and audio content but does not edit, move, rename, 
 
 MP3, PCM WAV, FLAC, Ogg Vorbis, and Ogg Opus are supported. AAC/M4A is not currently supported.
 
+## Arch Linux (makepkg)
+
+The repository includes a `PKGBUILD` that builds Kulkán from source for x86-64 Arch Linux. Build and install the package from a checkout:
+
+```sh
+sudo pacman -S --needed base-devel git
+git clone https://github.com/itzam-na/kulkan.git
+cd kulkan
+makepkg --syncdeps --cleanbuild
+sudo pacman -U ./kulkan-0.1.1-1-x86_64.pkg.tar.zst
+```
+
+Run `makepkg` as your regular user, not with `sudo`. The recipe installs build/runtime dependencies as needed; the resulting package is built locally from source and is not published as a binary release or AUR package.
+
 ## Build from source
 
 Build with Cargo and run the player:
