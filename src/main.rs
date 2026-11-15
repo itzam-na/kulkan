@@ -29,6 +29,96 @@ use library_workspace::{
 
 const APPLICATION_ID: &str = "org.kulkan.Kulkan";
 const STARTUP_VIEWS: [BrowseView; 3] = [BrowseView::Artists, BrowseView::Albums, BrowseView::Songs];
+const APPLICATION_CSS: &str = r#"
+.library-sidebar, .queue-sidebar {
+    border: none;
+    border-radius: 14px;
+    padding: 12px;
+    background-color: alpha(@theme_fg_color, 0.09);
+}
+
+.queue-sidebar {
+    background-color: alpha(@theme_fg_color, 0.12);
+}
+
+.workspace-panel {
+    border-radius: 14px;
+    padding: 12px;
+    background-color: alpha(@theme_fg_color, 0.025);
+}
+
+.queue-sidebar scrolledwindow {
+    border: none;
+}
+
+.queue-sidebar list {
+    border-radius: 8px;
+    background-color: @theme_base_color;
+}
+
+button.library-navigation {
+    min-height: 42px;
+    padding: 7px 12px;
+    border: none;
+    border-radius: 8px;
+    box-shadow: none;
+    background-color: transparent;
+}
+
+button.library-navigation:hover {
+    background-color: alpha(@theme_fg_color, 0.08);
+}
+
+button.library-navigation.active {
+    background-color: alpha(@theme_fg_color, 0.12);
+}
+
+button.library-navigation.active label {
+    font-weight: bold;
+    text-decoration-line: underline;
+}
+
+button.transport-button {
+    min-width: 40px;
+    min-height: 40px;
+    padding: 0;
+    border: none;
+    border-radius: 999px;
+    box-shadow: none;
+    background-color: alpha(@theme_fg_color, 0.08);
+}
+
+button.transport-button:hover {
+    background-color: alpha(@theme_fg_color, 0.16);
+}
+
+button.transport-button:disabled {
+    background-color: alpha(@theme_fg_color, 0.035);
+}
+
+button.transport-button.transport-primary {
+    min-width: 48px;
+    min-height: 48px;
+    background-color: @theme_selected_bg_color;
+    color: @theme_selected_fg_color;
+}
+
+button.transport-button.transport-primary:hover {
+    background-color: shade(@theme_selected_bg_color, 1.08);
+}
+
+.playback-timeline scale trough,
+.playback-timeline scale highlight {
+    min-height: 8px;
+    border-radius: 999px;
+}
+
+.playback-timeline scale slider {
+    min-width: 18px;
+    min-height: 18px;
+    border-radius: 999px;
+}
+"#;
 
 fn main() -> glib::ExitCode {
     match run() {
@@ -106,6 +196,30 @@ fn run() -> Result<glib::ExitCode, Box<dyn std::error::Error>> {
     Ok(application.run())
 }
 
+fn install_application_styles() {
+    let Some(display) = gtk::gdk::Display::default() else {
+        return;
+    };
+    let provider = gtk::CssProvider::new();
+    provider.load_from_data(APPLICATION_CSS);
+    gtk::style_context_add_provider_for_display(
+        &display,
+        &provider,
+        gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
+    );
+}
+
+fn library_navigation_button(label: &str) -> gtk::Button {
+    let button = gtk::Button::new();
+    button.add_css_class("library-navigation");
+    button.set_halign(gtk::Align::Fill);
+    let text = gtk::Label::new(Some(label));
+    text.set_halign(gtk::Align::Start);
+    text.set_hexpand(true);
+    button.set_child(Some(&text));
+    button
+}
+
 fn runtime_directory() -> PathBuf {
     let root = std::env::var_os("XDG_RUNTIME_DIR")
         .map(PathBuf::from)
@@ -171,6 +285,7 @@ impl ServerState {
 }
 
 fn build_main_window(application: &gtk::Application, server_state: Rc<RefCell<ServerState>>) {
+    install_application_styles();
     let window = gtk::ApplicationWindow::builder()
         .application(application)
         .title("Kulkán")
@@ -188,17 +303,17 @@ fn build_main_window(application: &gtk::Application, server_state: Rc<RefCell<Se
 
     let library_sidebar = gtk::Box::new(gtk::Orientation::Vertical, 8);
     library_sidebar.set_size_request(216, -1);
-    library_sidebar.add_css_class("sidebar");
+    library_sidebar.add_css_class("library-sidebar");
     let title = gtk::Label::new(Some("Library"));
     title.add_css_class("title-1");
     title.set_halign(gtk::Align::Start);
     library_sidebar.append(&title);
 
-    let search_navigation = gtk::Button::with_label("Search");
+    let search_navigation = library_navigation_button("Search");
     search_navigation.update_property(&[gtk::accessible::Property::Label("Open Search")]);
-    let artists_navigation = gtk::Button::with_label("Artists");
-    let albums_navigation = gtk::Button::with_label("Albums");
-    let songs_navigation = gtk::Button::with_label("Songs");
+    let artists_navigation = library_navigation_button("Artists");
+    let albums_navigation = library_navigation_button("Albums");
+    let songs_navigation = library_navigation_button("Songs");
     for button in [
         &search_navigation,
         &artists_navigation,
@@ -298,6 +413,7 @@ fn build_main_window(application: &gtk::Application, server_state: Rc<RefCell<Se
     settings_window.set_child(Some(&settings_content));
 
     let main_content = gtk::Box::new(gtk::Orientation::Vertical, 8);
+    main_content.add_css_class("workspace-panel");
     let app_header = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     app_header.set_halign(gtk::Align::Center);
     let logo = gtk::Image::from_icon_name(APPLICATION_ID);
@@ -518,7 +634,7 @@ fn build_main_window(application: &gtk::Application, server_state: Rc<RefCell<Se
     current_track_details.append(&current_track);
     current_track_details.append(&current_track_subtitle);
     let playback_controls = gtk::Box::new(gtk::Orientation::Horizontal, 0);
-    playback_controls.add_css_class("linked");
+    playback_controls.set_valign(gtk::Align::Center);
     let previous_track = gtk::Button::new();
     previous_track.set_child(Some(&gtk::Image::from_icon_name(
         "media-skip-backward-symbolic",
@@ -547,9 +663,13 @@ fn build_main_window(application: &gtk::Application, server_state: Rc<RefCell<Se
     play_pause.set_sensitive(false);
     next_track.set_sensitive(false);
     for button in [&previous_track, &stop_playback, &play_pause, &next_track] {
-        button.add_css_class("flat");
+        button.add_css_class("transport-button");
+        button.set_size_request(40, 40);
+        button.set_valign(gtk::Align::Center);
         playback_controls.append(button);
     }
+    play_pause.add_css_class("transport-primary");
+    play_pause.set_size_request(48, 48);
     playback_controls.set_hexpand(true);
     playback_controls.set_halign(gtk::Align::Center);
     let playback_top = gtk::Grid::new();
@@ -567,6 +687,7 @@ fn build_main_window(application: &gtk::Application, server_state: Rc<RefCell<Se
     let playback_duration = gtk::Label::new(Some("0:00"));
     playback_duration.add_css_class("numeric");
     let playback_timeline = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    playback_timeline.add_css_class("playback-timeline");
     playback_timeline.append(&playback_elapsed);
     playback_timeline.append(&playback_position);
     playback_timeline.append(&playback_duration);
@@ -580,13 +701,14 @@ fn build_main_window(application: &gtk::Application, server_state: Rc<RefCell<Se
 
     let queue_placeholder = gtk::Box::new(gtk::Orientation::Vertical, 8);
     queue_placeholder.set_size_request(264, -1);
-    queue_placeholder.add_css_class("sidebar");
+    queue_placeholder.add_css_class("queue-sidebar");
     let queue_title = gtk::Label::new(Some("Queue"));
     queue_title.add_css_class("title-2");
     queue_title.set_halign(gtk::Align::Start);
     queue_placeholder.append(&queue_title);
     let queue_list = gtk::ListBox::new();
     queue_list.set_selection_mode(gtk::SelectionMode::Single);
+    queue_list.add_css_class("queue-list");
     queue_list.update_property(&[gtk::accessible::Property::Label("Playback Queue")]);
     let queue_scroll = gtk::ScrolledWindow::builder()
         .child(&queue_list)
@@ -715,6 +837,10 @@ fn build_main_window(application: &gtk::Application, server_state: Rc<RefCell<Se
         status: status.clone(),
         library_workspace: Rc::clone(&library_workspace),
         actions: catalog_actions.clone(),
+        search_navigation: search_navigation.clone(),
+        artists_navigation: artists_navigation.clone(),
+        albums_navigation: albums_navigation.clone(),
+        songs_navigation: songs_navigation.clone(),
     };
     let queue_ui = QueueUi {
         list: queue_list.clone(),
@@ -1833,6 +1959,10 @@ struct BrowseUi {
     status: gtk::Label,
     library_workspace: Rc<RefCell<LibraryWorkspace>>,
     actions: CatalogActions,
+    search_navigation: gtk::Button,
+    artists_navigation: gtk::Button,
+    albums_navigation: gtk::Button,
+    songs_navigation: gtk::Button,
 }
 
 #[derive(Clone)]
@@ -3024,6 +3154,7 @@ fn execute_workspace_effects(browse: &BrowseUi, effects: Vec<WorkspaceEffect>) {
 fn render_library_workspace(browse: &BrowseUi) {
     let workspace = browse.library_workspace.borrow();
     let view = workspace.view();
+    update_library_navigation(browse, view.destination, view.browse.selection);
     match view.destination {
         WorkspaceDestination::Browse => {
             browse.search_criteria_panel.set_visible(false);
@@ -3160,6 +3291,42 @@ fn render_library_workspace(browse: &BrowseUi) {
                     }
                 }
             }
+        }
+    }
+}
+
+fn update_library_navigation(
+    browse: &BrowseUi,
+    destination: WorkspaceDestination,
+    selection: &BrowseSelection,
+) {
+    let active_view = match selection {
+        BrowseSelection::View(view) => Some(*view),
+        BrowseSelection::Artist(_) => Some(BrowseView::Artists),
+        BrowseSelection::Album(_) => Some(BrowseView::Albums),
+    };
+    for (button, active) in [
+        (
+            &browse.search_navigation,
+            destination == WorkspaceDestination::Search,
+        ),
+        (
+            &browse.artists_navigation,
+            destination == WorkspaceDestination::Browse && active_view == Some(BrowseView::Artists),
+        ),
+        (
+            &browse.albums_navigation,
+            destination == WorkspaceDestination::Browse && active_view == Some(BrowseView::Albums),
+        ),
+        (
+            &browse.songs_navigation,
+            destination == WorkspaceDestination::Browse && active_view == Some(BrowseView::Songs),
+        ),
+    ] {
+        if active {
+            button.add_css_class("active");
+        } else {
+            button.remove_css_class("active");
         }
     }
 }
