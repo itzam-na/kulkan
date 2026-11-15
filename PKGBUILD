@@ -12,7 +12,7 @@ optdepends=(
   'xdg-desktop-portal-gtk: portal-backed folder chooser'
   'gst-plugin-pipewire: direct PipeWire audio output'
 )
-_commit=3052ce15361068696a682c2ac7ec639b0cece54f
+_commit=523fca456d5099b442ed18d803db07a3b62d911c
 source=("git+https://github.com/itzam-na/kulkan.git#commit=${_commit}")
 sha256sums=('SKIP')
 
@@ -29,7 +29,7 @@ prepare() {
   cd "$srcdir/$pkgname"
   export CARGO_HOME="$srcdir/cargo-home"
   export RUSTUP_TOOLCHAIN=stable
-  cargo fetch --locked --target "${CARCH}-unknown-linux-gnu"
+  make fetch CARGO_FETCH_FLAGS=--frozen TARGET="${CARCH}-unknown-linux-gnu"
 }
 
 build() {
@@ -37,7 +37,7 @@ build() {
   export CARGO_HOME="$srcdir/cargo-home"
   export CARGO_TARGET_DIR=target
   export RUSTUP_TOOLCHAIN=stable
-  cargo build --frozen --release -p kulkan --bin kulkan -p kulkan-runtime --bin kulkan-server
+  make release CARGO_BUILD_FLAGS=--frozen
 }
 
 check() {
@@ -45,16 +45,10 @@ check() {
   export CARGO_HOME="$srcdir/cargo-home"
   export CARGO_TARGET_DIR=target
   export RUSTUP_TOOLCHAIN=stable
-  cargo test --frozen --workspace
+  make test CARGO_TEST_FLAGS=--frozen
 }
 
 package() {
   cd "$srcdir/$pkgname"
-  install -Dm0755 target/release/kulkan "$pkgdir/usr/bin/kulkan"
-  install -Dm0755 target/release/kulkan-server "$pkgdir/usr/bin/kulkan-server"
-  install -Dm0644 data/org.kulkan.Kulkan.desktop \
-    "$pkgdir/usr/share/applications/org.kulkan.Kulkan.desktop"
-  install -Dm0644 data/icons/512x512/apps/org.kulkan.Kulkan.png \
-    "$pkgdir/usr/share/icons/hicolor/512x512/apps/org.kulkan.Kulkan.png"
-  install -Dm0644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+  make install DESTDIR="$pkgdir" PREFIX=/usr
 }
