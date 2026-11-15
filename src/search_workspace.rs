@@ -84,6 +84,20 @@ impl SearchWorkspace {
         self.results_refresh_generation
     }
 
+    pub(crate) fn fail_results_refresh(
+        &mut self,
+        query_revision: u64,
+        refresh_generation: u64,
+    ) -> bool {
+        if !self.is_current_results_refresh(query_revision, refresh_generation) {
+            return false;
+        }
+        self.results = None;
+        self.pending_search = false;
+        self.panel = SearchPanel::Criteria;
+        true
+    }
+
     pub(crate) fn is_current_results_refresh(
         &self,
         query_revision: u64,
@@ -274,5 +288,16 @@ mod tests {
 
         assert_eq!(workspace.open(), SearchPanel::Criteria);
         assert!(!workspace.is_search_pending());
+    }
+
+    #[test]
+    fn failed_history_refresh_discards_stale_results_for_the_current_query() {
+        let mut workspace = SearchWorkspace::default();
+        let query_revision = workspace.begin_search(SearchCriteria::default());
+        let refresh_generation = workspace.begin_results_refresh();
+
+        assert!(workspace.fail_results_refresh(query_revision, refresh_generation));
+        assert_eq!(workspace.open(), SearchPanel::Criteria);
+        assert_eq!(workspace.results(), None);
     }
 }

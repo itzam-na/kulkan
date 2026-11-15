@@ -2452,11 +2452,29 @@ fn install_library_events(receiver: Receiver<UiEvent>, ui: LibraryUi) {
                     Err(error) => {
                         if browse
                             .search_workspace
-                            .borrow()
-                            .is_current_results_refresh(query_revision, refresh_generation)
-                            && browse.search_view_open.get()
+                            .borrow_mut()
+                            .fail_results_refresh(query_revision, refresh_generation)
                         {
-                            status.set_text(&format!("Could not refresh Search: {error}"));
+                            *catalog_paging.borrow_mut() = None;
+                            browse.search_results_active.set(false);
+                            browse
+                                .search_criteria_panel
+                                .set_visible(browse.search_view_open.get());
+                            browse.results_panel.set_visible(false);
+                            browse.clear_search_results.set_visible(false);
+                            browse.track_load_more.set_visible(false);
+                            browse.track_load_more.set_sensitive(false);
+                            browse.add_selected.set_sensitive(false);
+                            browse.add_all.set_sensitive(false);
+                            if browse.search_view_open.get() {
+                                while let Some(row) = catalog_list.first_child() {
+                                    catalog_list.remove(&row);
+                                }
+                                catalog_entries.borrow_mut().clear();
+                            }
+                            status.set_text(&format!(
+                                "Could not refresh Search after clearing history: {error}. Edit or submit the criteria to retry."
+                            ));
                         }
                     }
                 },
