@@ -9,6 +9,7 @@
 - `crates/kulkan-ipc`: private Unix socket, peer validation, and the versioned length-delimited message protocol.
 - `crates/kulkan-library`: filesystem traversal, read-only metadata discovery through `lofty`, GStreamer duration derivation, scan reconciliation, and catalog presentation data.
 - `SPEC.md`: approved product behavior. Treat it as the acceptance contract; resolved GitHub issues remain the decision history.
+- `docs/app-flow.md`: contributor-oriented map of runtime flows, module seams, state ownership, decision traceability, and extension points. Generate HTML/PDF with `make docs`; check its source/decision links and behavior tests with `make docs-check`.
 - `GLOSSARY.md`: domain language. Read it before changing tests or user-facing terminology.
 - `docs/adr/`: architectural decision records, when present.
 

@@ -1,6 +1,6 @@
 # Kulkán user guide
 
-This guide describes Kulkán's approved library, playback, search, queue, play-history, persistence, and state-transfer workflows. The redesigned navigation and Settings dialog may not yet be implemented in the local development build.
+This guide describes Kulkán's current library, playback, search, queue, play-history, persistence, and state-transfer workflows. Some approved behavior still requires manual desktop acceptance; see the [developer guide](development.md) and [product specification](../SPEC.md).
 
 ## Install and launch
 
@@ -48,7 +48,7 @@ Supported discovery formats are MP3, PCM WAV, FLAC, Ogg Vorbis, and Ogg Opus. AA
 
 ## Play a track
 
-Select one or more active catalog rows and choose **Add Selected** or use the icon-based Play/Pause transport to start them. The persistent bottom player bar shows current-track details, elapsed time, duration, and icon buttons for Previous, Stop, Play/Pause, and Next; each button has an accessible name and tooltip. Play/Pause pauses or resumes active playback; clicking the timeline seeks. Previous goes to the prior queue entry when the current track has played for less than two seconds, and otherwise restarts the current track. Playback uses the GStreamer plugins packaged with Kulkán and works offline; it does not download decoders or depend on host-installed codec plugins.
+Select one or more active catalog rows and choose **Add Selected** or use the icon-based Play/Pause transport to start them. The persistent bottom player bar shows current-track details, elapsed time, duration, and icon buttons for Previous, Stop, Play/Pause, and Next; each button has an accessible name and tooltip. Play/Pause pauses or resumes active playback; clicking the timeline seeks. Previous goes to the prior queue entry when the current track has played for less than two seconds, and otherwise restarts the current track. Playback uses locally available GStreamer decoder and audio-sink plugins and works offline; Kulkán does not download decoders. See [supported formats](../SPEC.md#3-supported-platforms-and-media) for runtime plugin requirements.
 
 ## Play history
 

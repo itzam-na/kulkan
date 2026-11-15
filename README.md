@@ -68,7 +68,7 @@ make test
 make clippy
 ```
 
-Use `make check` to run all three checks, `make gtk-smoke-test` for the isolated headless UI smoke test, `make clean` to remove build artifacts, or `make help` to list workflows. See the [user guide](docs/user-guide.md), [developer guide](docs/development.md), and product [SPEC](SPEC.md). Domain terms are in [`GLOSSARY.md`](GLOSSARY.md).
+Use `make check` to run all three checks, `make gtk-smoke-test` for the isolated headless UI smoke test, `make docs-check` to cross-check the app-flow guide against source and decisions, and `make docs` to generate its HTML/PDF under `target/docs/`. Use `make clean` to remove build artifacts, or `make help` to list workflows. See the [user guide](docs/user-guide.md), [developer guide](docs/development.md), the [app-flow and contributor map](docs/app-flow.md), and product [SPEC](SPEC.md). Domain terms are in [`GLOSSARY.md`](GLOSSARY.md).
 
 ## License
 

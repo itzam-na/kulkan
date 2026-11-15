@@ -13,12 +13,19 @@ CARGO_BUILD_FLAGS ?= --locked
 CARGO_TEST_FLAGS ?= --locked
 CARGO_CLIPPY_FLAGS ?= --locked
 TARGET ?=
+PANDOC ?= pandoc
+WEASYPRINT ?= weasyprint
+PYTHON ?= python3
+DOCS_DIR ?= target/docs
+APP_FLOW_DOC := docs/app-flow.md
+APP_FLOW_HTML := $(DOCS_DIR)/kulkan-app-flow.html
+APP_FLOW_PDF := $(DOCS_DIR)/kulkan-app-flow.pdf
 
 export CARGO_TARGET_DIR
 
 .PHONY: help all fetch build release run run-release launch fmt format test clippy check \
 	gtk-smoke-test install install-user uninstall uninstall-user package \
-	package-install package-uninstall clean
+	package-install package-uninstall docs docs-html docs-pdf docs-check clean
 
 help: ## Show available workflows
 	@awk 'BEGIN {FS = ":.*## "} /^[a-zA-Z0-9_.-]+:.*## / {printf "%-22s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -56,6 +63,24 @@ clippy: ## Run Clippy with warnings denied
 	$(CARGO) clippy $(CARGO_CLIPPY_FLAGS) --workspace --all-targets -- -D warnings
 
 check: fmt test clippy ## Run formatting, tests, and Clippy
+
+docs: docs-html docs-pdf ## Generate the app-flow guide as HTML and PDF
+
+docs-html: $(APP_FLOW_HTML) ## Generate the app-flow guide as HTML
+
+$(APP_FLOW_HTML): $(APP_FLOW_DOC)
+	@mkdir -p "$(DOCS_DIR)"
+	$(PANDOC) --standalone --metadata title="Kulkán app flow and contributor map" \
+		--output "$@" "$<"
+
+docs-pdf: $(APP_FLOW_PDF) ## Generate the app-flow guide as PDF
+
+$(APP_FLOW_PDF): $(APP_FLOW_HTML)
+	$(WEASYPRINT) "$<" "$@"
+
+docs-check: ## Check app-flow documentation against source, decisions, and tests
+	$(PYTHON) scripts/check-app-flow.py
+	$(CARGO) test $(CARGO_TEST_FLAGS) --workspace
 
 gtk-smoke-test: ## Run the isolated headless GTK smoke test
 	./scripts/gtk-smoke-test.sh
