@@ -7,14 +7,24 @@ This context covers a listener's local audio collection and the releases and tra
 **Album**:
 A music release that groups one or more tracks; a single is a one-track album.
 
+**Album artist credit**:
+The artist or artists attributed to a release, distinct from the artist credits attributed to its individual tracks.
+
 **Artist credit**:
 The artist or artists attributed to a track.
 
 **Criterion**:
 A condition the listener uses to identify tracks in the library.
 
+**Library**:
+The listener's local catalog of Library entries, discovered from one or more Library folders.
+
 **Library entry**:
 A file-backed item in the local catalog, one per resolved file path. Identical audio at distinct paths is represented by separate entries.
+
+**Library folder**:
+A filesystem folder selected as a source for explicitly scanning entries into the Library.
+_Avoid_: Library root
 
 **No Album**:
 A placeholder grouping for tracks with no album release identity; it is not itself an album.

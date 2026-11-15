@@ -3,7 +3,7 @@
 **Status:** Consolidated v1 specification, ready for implementation planning
 **Audience:** Product and implementation contributors
 
-This document consolidates the approved Wayfinder decisions for a single-user, personal Linux audio player. The [Codeberg Wayfinder map](https://codeberg.org/itzamna/kulkan/issues/1) and its linked decision issues are the decision history; this file is the implementation-facing specification. If a detail here conflicts with a resolved issue, correct the document to match the issue rather than silently changing the decision.
+This document consolidates the approved Wayfinder decisions for a single-user, personal Linux audio player. The [GitHub Wayfinder map](https://github.com/itzam-na/kulkan/issues/1) and its linked decision issues are the decision history; this file is the implementation-facing specification. If a detail here conflicts with a resolved issue, correct the document to match the issue rather than silently changing the decision.
 
 ## 1. Product goal and boundaries
 
@@ -25,7 +25,7 @@ The core experience must work offline. The application is for personal use and m
 - Do not use Electron, Java, or a web runtime as the application shell.
 - Run one application/server instance per user. The client starts the server as needed and shuts it down when the client exits; supervision follows [Server recovery](#10-local-state-and-server-recovery).
 - Use a versioned, length-delimited IPC protocol over the private socket; restrict socket-directory permissions and validate the peer.
-- V1 is built from source; no packaged distribution is provided. The client and child server run as the same user, communicate over a private per-user Unix socket, and the listener selects library roots through GTK's folder chooser.
+- V1 is built from source; no packaged distribution is provided. The client and child server run as the same user, communicate over a private per-user Unix socket, and the listener selects Library folders through GTK's folder chooser.
 - The app performs no network operations and never modifies media files.
 
 ## 3. Supported platforms and media
@@ -40,15 +40,16 @@ V1 supports MP3, WAV/PCM, FLAC, Ogg Vorbis, and Opus. The required GStreamer plu
 
 ## 4. Library, scanning, and file identity
 
-The listener selects library roots. Scanning is explicit/manual; do not continuously watch roots or modify media files.
+The listener selects Library folders. Scanning is explicit/manual; do not continuously watch folders or modify media files.
 
 ### Catalog entries and scans
 
 - A Library entry represents one resolved file path. Files with identical audio at distinct paths remain separate entries.
-- The same path reached through overlapping roots, or through an explicitly selected directory symlink and its target, appears once.
-- Skip nested symlinks. Follow a directory symlink only when the listener explicitly selected it as a root.
-- A scan that cannot read a root or subtree is incomplete: preserve its last-known entries and report the incomplete area. Only successfully enumerated areas may establish that an entry is missing.
-- Missing files and removed roots become inactive, non-selectable entries; retain their play history until the listener clears it. A file returning at the same path restores that entry.
+- The same path reached through overlapping Library folders, or through an explicitly selected directory symlink and its target, appears once.
+- Skip nested symlinks. Follow a directory symlink only when the listener explicitly selected it as a Library folder.
+- A scan that cannot read a Library folder or subtree is incomplete: preserve its last-known entries and report the incomplete area. Only successfully enumerated areas may establish that an entry is missing.
+- **Scan selected** scans only the selected configured Library folders; the folder list supports selecting multiple folders. **Scan all** scans every configured Library folder. A selected scan leaves other configured folders and their catalog entries/history untouched, and never treats an unselected configured folder as removed.
+- Missing files and removed folders become inactive, non-selectable entries; retain their play history until the listener clears it. A file returning at the same path restores that entry.
 - Metadata-only changes refresh tags and preserve identity/history. Changed audio content at the same path creates a new identity with zero plays; retain the previous identity as inactive/recoverable.
 - A move or rename transfers history only when exactly one inactive entry matches the audio content while ignoring metadata tags. Ambiguous matches and re-encodes create new identities.
 - The catalog has one entry per resolved path; copies at distinct paths are never merged.
@@ -124,13 +125,16 @@ A Playback attempt is one playback of one Track, paused/resumed as needed. It en
 
 ### Approved layout and search
 
-- Use the Library-first layout: library navigation at left, primary content in the center, and a persistent queue rail at right.
-- Show a browsable, paged view of the scanned Library in the center by default. Include inactive entries with an unavailable indication and keep them non-selectable.
-- An explicit search replaces the Library view with matching results; clearing search restores the unfiltered Library. Page both views without loading the entire catalog at once.
-- Order Library and search rows by artist, release, track number, then title. Keep current-track details and playback controls in a persistent bottom player bar; show a helpful empty state when the Library has no scanned entries.
-- Provide Basic search with inline criteria chips and Advanced search with a rule composer. Both preserve the current query/results and the queue rail.
+- Use a centered Kulkán logo/title, a left navigation headed **Library**, primary content in the center, and a persistent queue rail at right. Keep current-track details and playback controls in a persistent bottom player bar.
+- The left navigation contains Search, Artists, Albums, Songs, Settings, and Quit, in that order; Playlists are deferred. Settings opens a dialog and is not a browse view.
+- Artists lists each track once under its first-billed artist; track rows show the full artist credit. Albums groups by release title and album-artist credits when present, otherwise by the first-billed track artist. A different grouping credit or release title identifies a different Album; tracks without a release appear under the No Album placeholder. Songs shows the full scanned Library. Selecting an artist or Album displays its tracks in the center.
+- Use the same track selection and queue actions in Songs, artist and Album track lists, and search results. Include inactive entries with an unavailable indication and keep them non-selectable. Order track rows by artist, release, track number, then title; show a helpful empty state when the Library has no scanned entries.
+- The startup browse view is a persistent setting with Artists, Albums, and Songs choices. Songs is the initial default; changing the setting affects the next launch.
+- Selecting Search in the left navigation replaces the center browse view with the search criteria view. Provide Basic search with inline criteria chips and Advanced search with a rule composer. Submitting criteria replaces that view with paged matching results; do not load all results at once. Search state (criteria and results) is retained while navigating to other views. Clear empties criteria and results and leaves a blank search criteria view.
+- Order search rows by artist, release, track number, then title. Search ignores diacritics while results preserve original metadata. Keep the queue rail visible throughout search.
+- Settings lists configured Library folders and supports adding and removing folders, Scan selected, and Scan all. Include the existing played-threshold, play-history, state export/import, and reset controls in the dialog, along with the startup browse-view setting. Show scanning status and a completion summary/errors. Scanning is not cancellable; closing the dialog does not stop an active scan.
 - Boolean true criteria display as their label alone (for example, “Not-yet-played”); false prefixes “not.” Constrain long labels to the chip/card with ellipsis and make the full label available as a tooltip.
-- Search ignores diacritics while results preserve original metadata.
+- Playlist navigation and playlist management are deferred; no Playlists item appears in the v1 navigation.
 - The approved throwaway UI prototypes are discussion artifacts only; do not merge them as production UI.
 
 ### Keyboard, accessibility, and feedback
@@ -145,10 +149,10 @@ A Playback attempt is one playback of one Track, paused/resumed as needed. It en
 
 ### Persistence and transfer
 
-Persist selected library roots, the rebuildable metadata/catalog cache, user preferences (including played threshold), per-entry play counts including inactive entries, and the current queue/order plus shuffle/repeat settings.
+Persist selected Library folders, the rebuildable metadata/catalog cache, user preferences (including played threshold and startup browse view), per-entry play counts including inactive entries, and the current queue/order plus shuffle/repeat settings.
 
 - Derive the cache from read-only media files; rebuild it through explicit rescan.
-- On restore, start the current queued Track from the beginning as a new Playback attempt; do not restore a partial playback position.
+- On normal client launch or manual Retry, restore the current queued Track from the beginning in a paused state; do not restore a partial playback position.
 - Provide user-initiated export/import of app-owned state for personal backup/migration. Exclude media files and cloud sync.
 - Preserve controls for clearing individual or all play history.
 
@@ -157,7 +161,7 @@ Persist selected library roots, the rebuildable metadata/catalog cache, user pre
 - Enforce one application/server instance per user. The first GTK client starts one child server on a private per-user Unix socket. A subsequent launch focuses the existing client rather than starting another server.
 - Startup is idempotent. Clean a stale socket only after confirming no live server owns it.
 - If initial server startup fails, keep the client open with a clear “Server unavailable” state and Retry/Quit actions. Preserve cached library and queue; server-dependent actions are unavailable.
-- If the server crashes during playback, stop transport and make one automatic restart/reconnect attempt. On success, restore app state and queue, restart the current Track from the beginning as a new attempt, keep already-qualified counts, and discard incomplete progress.
+- If the server crashes during playback, stop transport and make one automatic restart/reconnect attempt. On success, restore app state and queue, restart the current Track from the beginning as a new, playing attempt, keep already-qualified counts, and discard incomplete progress.
 - On automatic recovery failure, preserve queue/cache and offer Retry/Quit without a retry loop. Manual Retry may start one replacement server.
 
 ## 11. Acceptance criteria for a first release
@@ -166,7 +170,7 @@ A first release is complete when:
 
 1. A build from source launches and runs on Linux.
 2. Every settled requirement has a verifiable acceptance check, automated where practical and otherwise documented for manual execution.
-3. A clean build, launch, and representative playback pass; verify selected-folder access across restarts, removable-media roots, and host audio routing.
+3. A clean build, launch, and representative playback pass; verify selected-folder access across restarts, removable-media folders, and host audio routing.
 4. Every supported audio format passes playback. Deeper automated coverage may run on a primary environment.
 5. Core library, search/criteria, queue/playback, history, persistence/export/import, recovery, keyboard, and accessibility workflows pass against their specified behavior, including offline operation.
 
@@ -178,20 +182,20 @@ The spec defines behavior, not a database schema, storage engine, IPC message sc
 
 ## 13. Decision traceability
 
-- [Issue #2 — Linux-native implementation research](https://codeberg.org/itzamna/kulkan/issues/2)
-- [Issue #3 — criteria-based selection semantics](https://codeberg.org/itzamna/kulkan/issues/3)
-- [Issue #4 — play-history and played-threshold behavior](https://codeberg.org/itzamna/kulkan/issues/4)
-- [Issue #5 — library scanning and file identity](https://codeberg.org/itzamna/kulkan/issues/5)
-- [Issue #6 — artist, album/release, date, and track metadata](https://codeberg.org/itzamna/kulkan/issues/6)
-- [Issue #7 — audio-content identity research](https://codeberg.org/itzamna/kulkan/issues/7)
-- [Issue #8 — native technology stack](https://codeberg.org/itzamna/kulkan/issues/8)
-- [Issue #9 — platform, packaging, and audio-format matrix](https://codeberg.org/itzamna/kulkan/issues/9)
-- [Issue #10 — playback queue controls](https://codeberg.org/itzamna/kulkan/issues/10)
-- [Issue #11 — queue UI prototype](https://codeberg.org/itzamna/kulkan/issues/11)
-- [Issue #12 — persistence and state transfer](https://codeberg.org/itzamna/kulkan/issues/12)
-- [Issue #13 — client/server recovery](https://codeberg.org/itzamna/kulkan/issues/13)
-- [Issue #14 — library search and criteria UI prototype](https://codeberg.org/itzamna/kulkan/issues/14)
-- [Issue #15 — first-release acceptance criteria](https://codeberg.org/itzamna/kulkan/issues/15)
-- [Issue #16 — duration derivation and filtering](https://codeberg.org/itzamna/kulkan/issues/16)
-- [Issue #17 — genre metadata mapping](https://codeberg.org/itzamna/kulkan/issues/17)
-- [Issue #21 — supported-format playback](https://codeberg.org/itzamna/kulkan/issues/21)
+- [Issue #2 — Linux-native implementation research](https://github.com/itzam-na/kulkan/issues/2)
+- [Issue #3 — criteria-based selection semantics](https://github.com/itzam-na/kulkan/issues/3)
+- [Issue #4 — play-history and played-threshold behavior](https://github.com/itzam-na/kulkan/issues/4)
+- [Issue #5 — library scanning and file identity](https://github.com/itzam-na/kulkan/issues/5)
+- [Issue #6 — artist, album/release, date, and track metadata](https://github.com/itzam-na/kulkan/issues/6)
+- [Issue #7 — audio-content identity research](https://github.com/itzam-na/kulkan/issues/7)
+- [Issue #8 — native technology stack](https://github.com/itzam-na/kulkan/issues/8)
+- [Issue #9 — platform, packaging, and audio-format matrix](https://github.com/itzam-na/kulkan/issues/9)
+- [Issue #10 — playback queue controls](https://github.com/itzam-na/kulkan/issues/10)
+- [Issue #11 — queue UI prototype](https://github.com/itzam-na/kulkan/issues/11)
+- [Issue #12 — persistence and state transfer](https://github.com/itzam-na/kulkan/issues/12)
+- [Issue #13 — client/server recovery](https://github.com/itzam-na/kulkan/issues/13)
+- [Issue #14 — library search and criteria UI prototype](https://github.com/itzam-na/kulkan/issues/14)
+- [Issue #15 — first-release acceptance criteria](https://github.com/itzam-na/kulkan/issues/15)
+- [Issue #16 — duration derivation and filtering](https://github.com/itzam-na/kulkan/issues/16)
+- [Issue #17 — genre metadata mapping](https://github.com/itzam-na/kulkan/issues/17)
+- [Issue #21 — supported-format playback](https://github.com/itzam-na/kulkan/issues/21)

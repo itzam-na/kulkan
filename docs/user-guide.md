@@ -1,6 +1,6 @@
 # Kulkán user guide
 
-This guide describes the library, playback, search, queue, play-history, persistence, and state-transfer workflows currently implemented in the local development build.
+This guide describes Kulkán's approved library, playback, search, queue, play-history, persistence, and state-transfer workflows. The redesigned navigation and Settings dialog may not yet be implemented in the local development build.
 
 ## Install and launch
 
@@ -11,24 +11,25 @@ cargo build --release
 ./target/release/kulkan
 ```
 
-The application works offline and does not modify media files. App-owned state, including selected roots, play history, preferences, and Queue, stays local.
+The application works offline and does not modify media files. App-owned state, including configured Library folders, play history, preferences, and Queue, stays local.
 
-## Add a music folder and scan
+## Settings, folders, and scans
 
-1. Choose **Add Folder…**. GTK opens the desktop's folder chooser/portal; select a folder that contains your music.
-2. Repeat to add more roots. Overlapping roots are allowed and do not create duplicate catalog entries.
-3. Select **Scan Library** when you want Kulkán to inspect the selected folders. Scanning is explicit; Kulkán does not watch them continuously.
-4. Read the status line for the number of active and inactive entries, incomplete areas, and media errors.
+Open **Settings** to manage Library folders. Choose **Add Folder…** to open the desktop folder chooser/portal, or remove a selected folder. Overlapping folders are allowed and do not create duplicate catalog entries.
 
-Kulkán remembers selected roots and the last scanned catalog locally. After relaunch, cached tracks appear without an automatic scan; choose **Scan Library** to refresh them. The portal must grant access to each selected folder; if a removable drive is disconnected or access is revoked, reconnect it or select the folder again before rescanning.
+Select one or more folders and choose **Scan selected**, or choose **Scan all** to scan every configured folder. Scanning is explicit; Kulkán does not watch folders continuously. The dialog shows scanning status and a completion summary or errors. A scan cannot be canceled, and closing Settings does not stop it. A selected scan leaves unselected folders and their catalog entries/history untouched.
+
+Kulkán remembers configured folders and the last scanned catalog locally. Removing a folder does not erase its catalog entries or play history; after a scan confirms those entries are no longer covered, they become inactive. If a removable drive is disconnected or access is revoked, the scan reports an incomplete area and preserves last-known entries there.
+
+Settings also contains the played threshold, play-history controls, state export/import, reset, and **View on startup**. Choose Artists, Albums, or Songs; the initial default is Songs, and a changed choice takes effect on the next launch.
 
 ## Browse the catalog
 
-The scanned Library appears by default, ordered by artist, release, track number, then title. It loads in pages; choose **Load More Tracks** to continue. Inactive entries remain visible as unavailable and cannot be queued. Rows display compact track details; additional metadata such as genre and file location is available in the row tooltip. Missing tags remain missing; Kulkán does not guess metadata from filenames or filesystem timestamps. A plain click selects one row (click it again to deselect); use **Ctrl-click** to toggle additional rows and **Shift-click** to select a range.
+Choose **Artists**, **Albums**, or **Songs** from the left navigation. Songs shows the full scanned Library; Artists groups tracks under the first-billed artist; Albums groups by release title and album-artist credits when present, otherwise by first-billed track artist. Tracks without an album appear under **No Album**. Selecting an artist or Album shows its tracks in the center. Track rows are ordered by artist, release, track number, then title. Inactive entries remain visible as unavailable and cannot be queued. Rows display compact track details; additional metadata such as genre and file location is available in the row tooltip. Missing tags remain missing; Kulkán does not guess metadata from filenames or filesystem timestamps. A plain click selects one row (click it again to deselect); use **Ctrl-click** to toggle additional rows and **Shift-click** to select a range. The same selection and queue actions are available in all track lists.
 
 ## Search the Library
 
-Enter a phrase and choose **Search** to show matching tracks without changing the Queue. Basic search ignores case and diacritics while preserving original displayed tags; the active filters appear as inline chips. **Advanced search** adds AND-combined artist, album, genre, year, duration, file-location, play-count, and Not-yet-played criteria. Use **is missing** for supported metadata fields. Year, duration (seconds), and play count accept an exact number or an inclusive `min..max` range. Search results use the same artist, release, track-number, then title order and are paged with **Load More Matches**. Choose **Add Selected** or **Add All Matches** to append results in that order; duplicates are allowed. **Clear** returns to the full Library view.
+Choose **Search** in the left navigation to show search criteria in the center. Basic search ignores case and diacritics while preserving original displayed tags; active filters appear as inline chips. **Advanced search** adds AND-combined artist, album, genre, year, duration, file-location, play-count, and Not-yet-played criteria. Use **is missing** for supported metadata fields. Year, duration (seconds), and play count accept an exact number or an inclusive `min..max` range. Submit the criteria to show paged results in the center; choose **Add Selected** or **Add All Matches** to append results to the Queue in order. The Queue remains visible and unchanged. Search criteria and results are retained when navigating elsewhere and returning to Search. **Clear** clears the criteria and results and leaves a blank criteria view.
 
 Supported discovery formats are MP3, PCM WAV, FLAC, Ogg Vorbis, and Ogg Opus. AAC/M4A is not supported and is reported in the scan status rather than silently ignored. A supported file that is malformed or cannot be read is reported as a media error rather than silently treated as a valid track.
 
@@ -42,19 +43,19 @@ The **Plays** column shows each entry's local qualifying-play count; zero means 
 
 ## Queue
 
-Use **Add Selected** or **Add All Matches** to append entries from search results; outside search, use **Add All Tracks**. Duplicate entries are allowed. The queue rail supports playing an entry, reordering upcoming entries, removing entries, clearing the queue, and changing repeat and shuffle modes. Queue order and repeat/shuffle settings persist across relaunches. A restored current track starts from the beginning.
+Use **Add Selected** or **Add All Matches** to append entries from search results; outside search, use **Add All Tracks**. Duplicate entries are allowed. The queue rail supports playing an entry, reordering upcoming entries, removing entries, clearing the queue, and changing repeat and shuffle modes. Queue order and repeat/shuffle settings persist across relaunches. On relaunch, the current track is restored from the beginning in a paused state.
 
 ## Backup and keyboard shortcuts
 
-Use **Export State…** and **Import State…** for a local backup or migration. The backup contains Kulkán-owned roots, cached catalog/history, preferences, and queue state; it does not include or modify media files. **Reset App State…** clears the same app-owned data while leaving audio files untouched.
+Use **Export State…** and **Import State…** in Settings for a local backup or migration. The backup contains Kulkán-owned folders, cached catalog/history, preferences, and queue state; it does not include or modify media files. **Reset App State…** clears the same app-owned data while leaving audio files untouched.
 
 - **Ctrl+F** focuses Basic search.
 - **Ctrl+Enter** adds selected results to the Queue.
 - **Ctrl+Space** toggles playback.
 - **Ctrl+Left** and **Ctrl+Right** go to Previous and Next.
-- **Ctrl+S** scans the Library when a text field is not focused.
+- **Ctrl+S** runs **Scan all** when a text field is not focused.
 - **Ctrl+Shift+E** exports state; **Ctrl+Shift+I** imports state.
-- **Escape** clears an active search, or clears Library/Queue selection when no search is active.
+- **Escape** clears active search criteria/results, or clears track/Queue selection when Search is inactive.
 
 When media metadata does not provide a duration, Kulkán uses GStreamer to discover or derive one and stores it in the catalog. If a file cannot be decoded or its duration cannot be established, the status line reports a playback/discovery error. Playback errors include the GStreamer diagnostic where available.
 
@@ -62,10 +63,10 @@ When media metadata does not provide a duration, Kulkán uses GStreamer to disco
 
 - Kulkán reads media; it does not edit, move, rename, or organize audio files.
 - A completed scan that confirms a file is gone keeps its catalog record but marks it inactive.
-- Removing a library root and scanning makes entries known only through that root inactive.
-- If a root or subtree cannot be enumerated, Kulkán reports the affected path and preserves last-known entries there. Reconnect the drive or restore access and scan again.
-- Nested symbolic links are skipped. A directory symlink can be scanned when it is explicitly selected as a library root.
-- Reaching a file through overlapping roots or through a selected directory symlink does not duplicate its canonical path. Separate copies at distinct paths remain separate entries.
+- Removing a Library folder and scanning makes entries no longer covered by any configured folder inactive.
+- If a folder or subtree cannot be enumerated, Kulkán reports the affected path and preserves last-known entries there. Reconnect the drive or restore access and scan again.
+- Nested symbolic links are skipped. A directory symlink can be scanned when it is explicitly selected as a Library folder.
+- Reaching a file through overlapping folders or through a selected directory symlink does not duplicate its canonical path. Separate copies at distinct paths remain separate entries.
 - Editing tags refreshes the displayed metadata without changing the entry's identity. Replacing the audio content at the same path creates a new entry and retains the old one as inactive.
 - A rename or move preserves identity only when exactly one inactive entry has the same exact encoded audio content. Ambiguous matches and re-encodes start new entries, keeping play history associated with the correct entry.
 
@@ -75,4 +76,4 @@ The GTK client starts a local Rust server. If startup fails, use **Retry** to ma
 
 ## Report a problem
 
-Issues are tracked at [Codeberg](https://codeberg.org/itzamna/kulkan/issues). Include the Kulkán version/build, Linux distribution and desktop session, the affected file format, and the exact steps and status/error text. Do not attach personal audio files unless you have made a safe, non-private test sample.
+Issues are tracked at [GitHub](https://github.com/itzam-na/kulkan/issues). Include the Kulkán version/build, Linux distribution and desktop session, the affected file format, and the exact steps and status/error text. Do not attach personal audio files unless you have made a safe, non-private test sample.
