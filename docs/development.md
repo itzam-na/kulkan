@@ -4,6 +4,7 @@
 
 - `src/main.rs`: GTK application lifecycle, folder chooser, library controls, catalog presentation, and playback transport controls.
 - `src/library_workspace.rs`: GTK-independent center-destination workflow for Browse and Search, including request effects and stale-completion policy.
+- `scripts/gtk-smoke-test.sh`: isolated, headless GTK smoke test for Search/Browse navigation and criteria retention.
 - `crates/kulkan-runtime`: managed server process, single-client activation, GStreamer playback, and the public client/server operations.
 - `crates/kulkan-ipc`: private Unix socket, peer validation, and the versioned length-delimited message protocol.
 - `crates/kulkan-library`: filesystem traversal, read-only metadata discovery through `lofty`, GStreamer duration derivation, scan reconciliation, and catalog presentation data.
@@ -21,14 +22,24 @@ For a normal Rust development environment with GTK 4 development files installed
 cargo fmt --all -- --check
 cargo test --workspace --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
+cargo build --workspace --release --locked
+```
 
 A tracked pre-commit hook is available in `.githooks/pre-commit`. Enable it with:
 
 ```sh
 git config core.hooksPath .githooks
 ```
-cargo build --workspace --release --locked
+
+## GTK smoke test
+
+Run the real client in an isolated XDG profile and a headless Weston/Xwayland session:
+
+```sh
+./scripts/gtk-smoke-test.sh
 ```
+
+The smoke test exercises Search submission, Browse navigation, restoring cached Search results, editing criteria, and Clear. It uses an empty Library and does not read or scan the listener's Library. It requires `weston`, `dbus-run-session`, `xdotool`, ImageMagick's `import`, and `tesseract`.
 
 The scan tests use temporary directories and generated minimal WAV samples. The metadata matrix includes small synthetic files for MP3, WAV/PCM, FLAC, Ogg Vorbis, and Opus. They contain no copyrighted recordings.
 
@@ -45,7 +56,7 @@ Tests exercise behavior at public boundaries:
 - The same public server seam covers played-threshold preferences, coverage across pauses/seeks/replayed intervals, repeat attempts, and per-entry/all-history clearing. Playback uses a synchronized GStreamer `fakesink` so test timing is repeatable without host audio.
 - Unknown media duration is covered through public `scan_library` results; a decodable fixture with unknown duration must produce a positive cached catalog duration.
 - `present_catalog_entry` is the GTK presentation-data boundary. It preserves original tag strings and makes inactive entries non-selectable; GTK renders this model.
-- Folder-portal grants, removable media, host audio routing, GTK queue/transport/search wiring, selection toggling, timeline seeking, keyboard shortcuts, assistive technology, and distro compatibility require manual checks on real desktops; do not claim they passed based only on unit tests.
+- The headless smoke test covers Search submission, Browse navigation, Search restoration/editing, and Clear. Folder-portal grants, removable media, host audio routing, GTK queue/transport, selection toggling, timeline seeking, keyboard shortcuts, assistive technology, and distro compatibility still require manual checks on real desktops; do not claim they passed based only on unit tests.
 
 For each behavior change, add a failing test at the relevant public seam, implement the smallest vertical slice that makes it pass, and then review adjacent failure paths. Keep filesystem and portal errors visible; do not turn an incomplete scan into confirmed missing files.
 
