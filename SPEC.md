@@ -3,7 +3,7 @@
 **Status:** Consolidated v1 specification, ready for implementation planning
 **Audience:** Product and implementation contributors
 
-This document consolidates the approved Wayfinder decisions for a single-user, personal Linux audio player. The [Codeberg Wayfinder map](https://codeberg.org/padi/izmusica/issues/1) and its linked decision issues are the decision history; this file is the implementation-facing specification. If a detail here conflicts with a resolved issue, correct the document to match the issue rather than silently changing the decision.
+This document consolidates the approved Wayfinder decisions for a single-user, personal Linux audio player. The [Codeberg Wayfinder map](https://codeberg.org/itzamna/kulkan/issues/1) and its linked decision issues are the decision history; this file is the implementation-facing specification. If a detail here conflicts with a resolved issue, correct the document to match the issue rather than silently changing the decision.
 
 ## 1. Product goal and boundaries
 
@@ -16,8 +16,7 @@ The core experience must work offline. The application is for personal use and m
 - Video, streaming services, remote clients, multi-user access, accounts, cloud services, telemetry, or online-dependent core behavior.
 - Automatic DJ/autoplay behavior outside the listener-managed queue.
 - Advanced OR/grouped criteria or saved rule sets.
-- AAC/M4A and distro-native packages.
-- Public Flathub distribution and selecting an application source-code license.
+- AAC/M4A support and packaged distribution.
 
 ## 2. Architecture and technology constraints
 
@@ -26,28 +25,18 @@ The core experience must work offline. The application is for personal use and m
 - Do not use Electron, Java, or a web runtime as the application shell.
 - Run one application/server instance per user. The client starts the server as needed and shuts it down when the client exits; supervision follows [Server recovery](#10-local-state-and-server-recovery).
 - Use a versioned, length-delimited IPC protocol over the private socket; restrict socket-directory permissions and validate the peer.
-- V1 packaging is Flatpak-only for x86-64, using the GNOME runtime/SDK or a compatible GStreamer runtime extension. Use a private/local Flatpak repository; updates use `flatpak update`.
-- Keep the client and child server in the same sandbox. Grant no network access and avoid broad host-filesystem permissions. Use GTK folder portals for explicitly selected media roots, retaining only the access needed for rescans, and grant the host audio socket permission required for playback.
+- V1 is built from source; no packaged distribution is provided. The client and child server run as the same user, communicate over a private per-user Unix socket, and the listener selects library roots through GTK's folder chooser.
+- The app performs no network operations and never modifies media files.
 
 ## 3. Supported platforms and media
 
-### Linux test baselines
+### Linux target
 
-Test the Flatpak on each of these x86-64 environments:
-
-1. Ubuntu 26.04 LTS
-2. Linux Mint 22.3
-3. Debian 13.7
-4. Current Arch rolling
-5. Fedora 45
-6. openSUSE Tumbleweed
-7. openSUSE Leap 16.1 (document its x86-64-v2 CPU requirement)
-
-Other x86-64 systems with a compatible Flatpak runtime are best-effort; compatibility with every distribution/desktop combination is not promised.
+V1 targets Linux and is built from source. No packaged distribution or distro compatibility claim is made.
 
 ### Supported audio formats
 
-V1 supports MP3, WAV/PCM, FLAC, Ogg Vorbis, and Opus. The Flatpak must include the required GStreamer elements in its runtime or compatible extension, including `mpg123audiodec`, `mpegaudioparse`, `wavparse`, `flacdec`, `vorbisdec`, `opusdec`, and an audio sink; do not rely on host-installed plugins. Do not download missing decoders during playback; report an actionable unsupported-format error. AAC/M4A is deferred.
+V1 supports MP3, WAV/PCM, FLAC, Ogg Vorbis, and Opus. The required GStreamer plugins providing `mpg123audiodec`, `mpegaudioparse`, `wavparse`, `flacdec`, `vorbisdec`, `opusdec`, and an audio sink must be available. Do not download missing decoders during playback; report an actionable unsupported-format error. AAC/M4A is deferred.
 
 ## 4. Library, scanning, and file identity
 
@@ -68,7 +57,7 @@ The listener selects library roots. Scanning is explicit/manual; do not continuo
 
 Use a format-aware exact encoded-content SHA-256 digest that excludes tags and container bookkeeping, but includes the codec configuration needed to interpret the stream and the ordered encoded audio frames/packets. For PCM WAV, include the format description and sample data. Compute linearly without decoding. A re-encode is a new identity; perceptual/similarity matches must not transfer history. Transfer history only for a unique exact match.
 
-The detailed rationale and format-specific source notes are in the [audio-content fingerprint research](https://codeberg.org/padi/izmusica/src/branch/research/audio-content-fingerprint/.scratch/local-linux-audio-player/research/audio-content-fingerprint.md).
+The detailed rationale and format-specific source notes are in the [audio-content fingerprint research](https://codeberg.org/itzamna/kulkan/src/branch/research/audio-content-fingerprint/.scratch/local-linux-audio-player/research/audio-content-fingerprint.md).
 
 ## 5. Metadata and catalog values
 
@@ -83,7 +72,7 @@ Preserve original metadata for display. Normalize separately for search and filt
 - Use TRCK/`TRACKNUMBER`; WAV ITRK is a compatibility extension. Parse `number/total` where present. Preserve absence and conflicts deterministically.
 - Every credited artist is searchable, but list each track once under its first-billed artist and show the full credit.
 
-The complete cited field mapping is documented in the [audio metadata mapping research](https://codeberg.org/padi/izmusica/src/branch/research/audio-metadata-mapping/.scratch/local-linux-audio-player/research/audio-metadata-mapping.md).
+The complete cited field mapping is documented in the [audio metadata mapping research](https://codeberg.org/itzamna/kulkan/src/branch/research/audio-metadata-mapping/.scratch/local-linux-audio-player/research/audio-metadata-mapping.md).
 
 ### Genre
 
@@ -94,7 +83,7 @@ The complete cited field mapping is documented in the [audio metadata mapping re
 - A genre criterion matches if any stored value matches. If there are no recognized non-empty values, genre is missing and matches only an explicit “is missing” criterion.
 - For conflicting representations, apply the precedence above and retain losing values as provenance rather than silently unioning contradictory tags.
 
-See the [genre metadata research note](https://codeberg.org/padi/izmusica/src/branch/research/genre-metadata-mapping/.scratch/local-linux-audio-player/research/genre-metadata-mapping.md). Validate ID3v2.3 variants and parsing against the shipped GStreamer runtime.
+See the [genre metadata research note](https://codeberg.org/itzamna/kulkan/src/branch/research/genre-metadata-mapping/.scratch/local-linux-audio-player/research/genre-metadata-mapping.md). Validate ID3v2.3 variants and parsing against the shipped GStreamer runtime.
 
 ## 6. Criteria and library search
 
@@ -175,34 +164,34 @@ Persist selected library roots, the rebuildable metadata/catalog cache, user pre
 
 A first release is complete when:
 
-1. An installable Flatpak works locally; public-store publication is not required.
+1. A build from source launches and runs on Linux.
 2. Every settled requirement has a verifiable acceptance check, automated where practical and otherwise documented for manual execution.
-3. Installation, launch, and representative playback pass on all seven required platform baselines; verify selected-folder portal access across restarts, removable-media roots, and host audio routing.
-4. Every supported audio format passes playback on every required platform baseline. Deeper automated coverage may run on a primary environment.
+3. A clean build, launch, and representative playback pass; verify selected-folder access across restarts, removable-media roots, and host audio routing.
+4. Every supported audio format passes playback. Deeper automated coverage may run on a primary environment.
 5. Core library, search/criteria, queue/playback, history, persistence/export/import, recovery, keyboard, and accessibility workflows pass against their specified behavior, including offline operation.
 
 Release blockers include crashes or hangs; modification of user media; loss of app-owned state; inability to complete a core workflow; or failure of any required platform/format combination. Document and triage lesser defects. Do not set numeric performance targets until reference hardware and library size are defined; crashes, hangs, and unusable core workflows remain blockers.
 
 ## 12. Implementation details intentionally left open
 
-The spec defines behavior, not a database schema, storage engine, IPC message schema, or exact keyboard shortcut assignments. The IPC framing must be versioned and length-delimited as specified above. The implementation must preserve the externally specified behavior and acceptance checks. Choosing an application source-code license is out of scope for v1.
+The spec defines behavior, not a database schema, storage engine, IPC message schema, or exact keyboard shortcut assignments. The IPC framing must be versioned and length-delimited as specified above. The implementation must preserve the externally specified behavior and acceptance checks. The source is licensed under GPL-3.0-or-later.
 
 ## 13. Decision traceability
 
-- [Issue #2 — Linux-native implementation research](https://codeberg.org/padi/izmusica/issues/2)
-- [Issue #3 — criteria-based selection semantics](https://codeberg.org/padi/izmusica/issues/3)
-- [Issue #4 — play-history and played-threshold behavior](https://codeberg.org/padi/izmusica/issues/4)
-- [Issue #5 — library scanning and file identity](https://codeberg.org/padi/izmusica/issues/5)
-- [Issue #6 — artist, album/release, date, and track metadata](https://codeberg.org/padi/izmusica/issues/6)
-- [Issue #7 — audio-content identity research](https://codeberg.org/padi/izmusica/issues/7)
-- [Issue #8 — native technology stack](https://codeberg.org/padi/izmusica/issues/8)
-- [Issue #9 — platform, packaging, and audio-format matrix](https://codeberg.org/padi/izmusica/issues/9)
-- [Issue #10 — playback queue controls](https://codeberg.org/padi/izmusica/issues/10)
-- [Issue #11 — queue UI prototype](https://codeberg.org/padi/izmusica/issues/11)
-- [Issue #12 — persistence and state transfer](https://codeberg.org/padi/izmusica/issues/12)
-- [Issue #13 — client/server recovery](https://codeberg.org/padi/izmusica/issues/13)
-- [Issue #14 — library search and criteria UI prototype](https://codeberg.org/padi/izmusica/issues/14)
-- [Issue #15 — first-release acceptance criteria](https://codeberg.org/padi/izmusica/issues/15)
-- [Issue #16 — duration derivation and filtering](https://codeberg.org/padi/izmusica/issues/16)
-- [Issue #17 — genre metadata mapping](https://codeberg.org/padi/izmusica/issues/17)
-- [Issue #21 — supported-format playback](https://codeberg.org/padi/izmusica/issues/21)
+- [Issue #2 — Linux-native implementation research](https://codeberg.org/itzamna/kulkan/issues/2)
+- [Issue #3 — criteria-based selection semantics](https://codeberg.org/itzamna/kulkan/issues/3)
+- [Issue #4 — play-history and played-threshold behavior](https://codeberg.org/itzamna/kulkan/issues/4)
+- [Issue #5 — library scanning and file identity](https://codeberg.org/itzamna/kulkan/issues/5)
+- [Issue #6 — artist, album/release, date, and track metadata](https://codeberg.org/itzamna/kulkan/issues/6)
+- [Issue #7 — audio-content identity research](https://codeberg.org/itzamna/kulkan/issues/7)
+- [Issue #8 — native technology stack](https://codeberg.org/itzamna/kulkan/issues/8)
+- [Issue #9 — platform, packaging, and audio-format matrix](https://codeberg.org/itzamna/kulkan/issues/9)
+- [Issue #10 — playback queue controls](https://codeberg.org/itzamna/kulkan/issues/10)
+- [Issue #11 — queue UI prototype](https://codeberg.org/itzamna/kulkan/issues/11)
+- [Issue #12 — persistence and state transfer](https://codeberg.org/itzamna/kulkan/issues/12)
+- [Issue #13 — client/server recovery](https://codeberg.org/itzamna/kulkan/issues/13)
+- [Issue #14 — library search and criteria UI prototype](https://codeberg.org/itzamna/kulkan/issues/14)
+- [Issue #15 — first-release acceptance criteria](https://codeberg.org/itzamna/kulkan/issues/15)
+- [Issue #16 — duration derivation and filtering](https://codeberg.org/itzamna/kulkan/issues/16)
+- [Issue #17 — genre metadata mapping](https://codeberg.org/itzamna/kulkan/issues/17)
+- [Issue #21 — supported-format playback](https://codeberg.org/itzamna/kulkan/issues/21)

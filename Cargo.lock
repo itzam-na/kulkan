@@ -712,7 +712,7 @@ dependencies = [
 
 [[package]]
 name = "kulkan"
-version = "0.1.0"
+version = "0.1.1"
 dependencies = [
  "gtk4",
  "kulkan-library",

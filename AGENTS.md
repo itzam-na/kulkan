@@ -2,7 +2,7 @@
 
 ### Issue tracker
 
-Issues are tracked in Codeberg Issues for `padi/izmusica` via `gt`. See `docs/agents/issue-tracker.md`.
+Issues are tracked in Codeberg Issues for `itzamna/kulkan` via `gt`. See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 

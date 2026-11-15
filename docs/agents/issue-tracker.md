@@ -1,11 +1,11 @@
 # Issue tracker: Codeberg
 
-Issues for this repo live in Codeberg Issues at https://codeberg.org/padi/izmusica. Use the `gt` CLI, authenticated to Codeberg, with `padi/izmusica` as the repository.
+Issues for this repo live in Codeberg Issues at https://codeberg.org/itzamna/kulkan. Use the `gt` CLI, authenticated to Codeberg, with `itzamna/kulkan` as the repository.
 
 ## Issue operations
 
-- **Publish an issue:** `gt issue create --repo padi/izmusica --title "..." --body "..."`
-- **Fetch an issue:** `gt issue view NUMBER --repo padi/izmusica` (add `--comments` for conversation)
+- **Publish an issue:** `gt issue create --repo itzamna/kulkan --title "..." --body "..."`
+- **Fetch an issue:** `gt issue view NUMBER --repo itzamna/kulkan` (add `--comments` for conversation)
 - **Update or comment:** use `gt issue edit` or `gt issue comment`
 - **Close or reopen:** use `gt issue close` or `gt issue reopen`
 - **Local files:** `.scratch/` may hold specs and research assets, but Codeberg Issues are the canonical tracker. Link or attach relevant assets to their issue.

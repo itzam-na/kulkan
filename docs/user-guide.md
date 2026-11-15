@@ -4,13 +4,14 @@ This guide describes the library, playback, search, queue, play-history, persist
 
 ## Install and launch
 
-Kulkán is currently distributed as a private/local Flatpak, not through Flathub or distro package repositories. Follow [`flatpak/README.md`](../flatpak/README.md) to build and install it for your user. Launch it with:
+Build Kulkán from source with Cargo, then launch it:
 
 ```sh
-flatpak run org.kulkan.Kulkan
+cargo build --release
+./target/release/kulkan
 ```
 
-The application works offline and the Flatpak has no network permission.
+The application works offline and does not modify media files. App-owned state, including selected roots, play history, preferences, and Queue, stays local.
 
 ## Add a music folder and scan
 
@@ -74,4 +75,4 @@ The GTK client starts a local Rust server. If startup fails, use **Retry** to ma
 
 ## Report a problem
 
-Issues are tracked at [Codeberg](https://codeberg.org/padi/izmusica/issues). Include the Kulkán version/build, Linux distribution and desktop session, the affected file format, and the exact steps and status/error text. Do not attach personal audio files unless you have made a safe, non-private test sample.
+Issues are tracked at [Codeberg](https://codeberg.org/itzamna/kulkan/issues). Include the Kulkán version/build, Linux distribution and desktop session, the affected file format, and the exact steps and status/error text. Do not attach personal audio files unless you have made a safe, non-private test sample.

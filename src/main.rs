@@ -122,11 +122,7 @@ fn data_directory() -> PathBuf {
         .unwrap_or_else(|| {
             std::env::temp_dir().join(format!("kulkan-data-{}", unsafe { libc::geteuid() }))
         });
-    if std::env::var_os("FLATPAK_ID").as_deref() == Some(std::ffi::OsStr::new(APPLICATION_ID)) {
-        root
-    } else {
-        root.join(APPLICATION_ID)
-    }
+    root.join(APPLICATION_ID)
 }
 
 struct ServerState {
