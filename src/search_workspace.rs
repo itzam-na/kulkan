@@ -74,6 +74,11 @@ impl SearchWorkspace {
         true
     }
 
+    pub(crate) fn fail_search(&mut self) {
+        self.pending_search = false;
+        self.panel = SearchPanel::Criteria;
+    }
+
     pub(crate) fn begin_results_refresh(&mut self) -> u64 {
         self.results_refresh_generation = self.results_refresh_generation.wrapping_add(1);
         self.results_refresh_generation
@@ -255,5 +260,19 @@ mod tests {
 
         assert_eq!(workspace.open(), SearchPanel::Criteria);
         assert_eq!(workspace.results().unwrap().next_offset, None);
+    }
+
+    #[test]
+    fn failed_search_returns_to_criteria_instead_of_remaining_pending() {
+        let mut workspace = SearchWorkspace::default();
+        workspace.begin_search(SearchCriteria {
+            text: Some("jazz".to_owned()),
+            ..SearchCriteria::default()
+        });
+
+        workspace.fail_search();
+
+        assert_eq!(workspace.open(), SearchPanel::Criteria);
+        assert!(!workspace.is_search_pending());
     }
 }

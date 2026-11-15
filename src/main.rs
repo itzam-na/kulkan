@@ -2395,7 +2395,13 @@ fn install_library_events(receiver: Receiver<UiEvent>, ui: LibraryUi) {
                         }
                     }
                     Err(error) => {
-                        status.set_text(&format!("Could not clear play history: {error}"));
+                        if browse
+                            .search_workspace
+                            .borrow()
+                            .is_current_request(generation)
+                        {
+                            status.set_text(&format!("Could not clear play history: {error}"));
+                        }
                     }
                 },
                 UiEvent::SearchRefreshed {
@@ -2649,6 +2655,7 @@ fn install_library_events(receiver: Receiver<UiEvent>, ui: LibraryUi) {
                             status.set_text("Search results updated.");
                         }
                         Err(error) => {
+                            browse.search_workspace.borrow_mut().fail_search();
                             browse.search_results_active.set(false);
                             browse.search_criteria_panel.set_visible(true);
                             browse.search_chips.set_visible(false);
