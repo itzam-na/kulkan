@@ -4,10 +4,11 @@ This guide describes the library, playback, search, queue, play-history, persist
 
 ## Install and launch
 
-Kulkán's source-built AUR package is prepared for x86-64 Arch Linux but has not yet been submitted to the AUR. The `v0.1.1` source tag is published. Build the package with `makepkg --syncdeps --cleanbuild` and install the resulting package, or use your preferred AUR helper once it is available there. Launch Kulkán with:
+Build Kulkán from source with Cargo, then launch it:
 
 ```sh
-kulkan
+cargo build --release
+./target/release/kulkan
 ```
 
 The application works offline and does not modify media files. App-owned state, including selected roots, play history, preferences, and Queue, stays local.
@@ -74,4 +75,4 @@ The GTK client starts a local Rust server. If startup fails, use **Retry** to ma
 
 ## Report a problem
 
-Issues are tracked at [Codeberg](https://codeberg.org/padi/izmusica/issues). Include the Kulkán version/build, Linux distribution and desktop session, the affected file format, and the exact steps and status/error text. Do not attach personal audio files unless you have made a safe, non-private test sample.
+Issues are tracked at [Codeberg](https://codeberg.org/itzamna/kulkan/issues). Include the Kulkán version/build, Linux distribution and desktop session, the affected file format, and the exact steps and status/error text. Do not attach personal audio files unless you have made a safe, non-private test sample.

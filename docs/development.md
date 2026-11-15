@@ -41,23 +41,6 @@ Tests exercise behavior at public boundaries:
 
 For each behavior change, add a failing test at the relevant public seam, implement the smallest vertical slice that makes it pass, and then review adjacent failure paths. Keep filesystem and portal errors visible; do not turn an incomplete scan into confirmed missing files.
 
-## Arch Linux package (AUR)
-
-The source-built AUR recipe targets x86-64 Arch Linux and pins the Cargo dependency graph with `Cargo.lock`. Regenerate `.SRCINFO` from the recipe after changing its metadata:
-
-```sh
-makepkg --printsrcinfo > .SRCINFO
-```
-
-On Arch Linux, validate and build the package in a clean environment with:
-
-```sh
-bash -n PKGBUILD
-makepkg --syncdeps --cleanbuild
-```
-
-The recipe targets the published Codeberg `v0.1.1` source tag. Review the generated package with `namcap` when available before submitting it to the AUR.
-
 ### Library content identity
 
 The scanner stores a versioned SHA-256 fingerprint beside each library entry. Fingerprints are format-aware: PCM WAVE hashes its format chunk and sample data; FLAC hashes stream configuration and audio frames; MP3 hashes MPEG audio frames; Ogg Vorbis hashes its identification/setup headers and audio packets; Ogg Opus hashes its decoder configuration (including output gain) and audio packets. Container/tag metadata is excluded. A re-encode is intentionally a different identity. If the canonical representation changes, increment the fingerprint version and add public `scan_library` regression coverage before changing reconciliation behavior.
@@ -66,7 +49,7 @@ Identity reconciliation is conservative: same-path exact matches preserve the en
 
 ## Manual library acceptance checklist
 
-1. Build and install the AUR package on a clean x86-64 Arch Linux system, then launch Kulkán.
+1. Build from source on a clean Linux system, then launch Kulkán.
 2. Confirm the selection appears, and that the first scan happens only after pressing **Scan Library**.
 3. Include MP3, PCM WAV, FLAC, Ogg Vorbis, and Opus samples; verify original visible tags and file locations.
 4. Select overlapping roots and a directory symlink as a root; verify one catalog entry per resolved path. Verify a nested symlink is skipped.
@@ -78,4 +61,4 @@ Identity reconciliation is conservative: same-path exact matches preserve the en
 10. Confirm inactive entries remain visible but cannot be selected or queued. With an empty catalog, confirm the Library explains how to add a folder and scan it.
 11. Confirm a plain click selects one track, a second plain click deselects it, Ctrl-click toggles tracks without clearing other selections, and Shift-click selects the inclusive range from the last anchor.
 
-The current packaging target is x86-64 Arch Linux via the AUR. Record the exact Arch image, kernel, desktop session, audio sink, and package commit tested; do not infer compatibility with other distributions from one successful package build.
+Record the exact Linux distribution, kernel, desktop session, audio sink, and commit tested; do not infer compatibility with other distributions from one successful build.
