@@ -12,9 +12,23 @@ pub(crate) struct SearchWorkspace {
     panel: SearchPanel,
     criteria: SearchCriteria,
     results: Option<CatalogPage>,
+    generation: u64,
 }
 
 impl SearchWorkspace {
+    pub(crate) fn begin_request(&mut self) -> u64 {
+        self.generation = self.generation.wrapping_add(1);
+        self.generation
+    }
+
+    pub(crate) fn invalidate_pending(&mut self) {
+        self.generation = self.generation.wrapping_add(1);
+    }
+
+    pub(crate) fn is_current_request(&self, generation: u64) -> bool {
+        self.generation == generation
+    }
+
     pub(crate) fn open(&self) -> SearchPanel {
         self.panel
     }
@@ -41,10 +55,12 @@ impl SearchWorkspace {
     }
 
     pub(crate) fn edit_criteria(&mut self) {
+        self.invalidate_pending();
         self.panel = SearchPanel::Criteria;
     }
 
     pub(crate) fn clear(&mut self) {
+        self.invalidate_pending();
         self.criteria = SearchCriteria::default();
         self.results = None;
         self.panel = SearchPanel::Criteria;
@@ -100,13 +116,26 @@ mod tests {
                 next_offset: Some(32),
             },
         );
-        workspace.edit_criteria();
         workspace.append_results_page(CatalogPage {
             entries: Vec::new(),
             next_offset: None,
         });
+        workspace.edit_criteria();
 
         assert_eq!(workspace.open(), SearchPanel::Criteria);
         assert_eq!(workspace.results().unwrap().next_offset, None);
+    }
+
+    #[test]
+    fn newer_search_work_invalidates_older_history_clear_responses() {
+        let mut workspace = SearchWorkspace::default();
+        let history_clear = workspace.begin_request();
+        let newer_search = workspace.begin_request();
+
+        assert!(!workspace.is_current_request(history_clear));
+        assert!(workspace.is_current_request(newer_search));
+
+        workspace.invalidate_pending();
+        assert!(!workspace.is_current_request(newer_search));
     }
 }

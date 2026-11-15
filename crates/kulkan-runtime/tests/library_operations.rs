@@ -129,6 +129,40 @@ fn wait_for_play_count(server: &ServerProcess, track: &Path, expected: u64) {
 }
 
 #[test]
+fn scan_all_after_removing_the_last_root_marks_entries_inactive_and_keeps_history() {
+    let directory = TestDirectory::new();
+    let root = directory.0.join("music");
+    fs::create_dir(&root).unwrap();
+    let track = root.join("one.wav");
+    write_tagged_pcm_wav(&track);
+    let socket_path = directory.0.join("server.sock");
+    let executable = PathBuf::from(env!("CARGO_BIN_EXE_kulkan-server"));
+    let mut server = ServerProcess::start_with_audio_sink(
+        &executable,
+        &socket_path,
+        Duration::from_secs(2),
+        Some("fakesink"),
+    )
+    .unwrap();
+    server.add_library_root(&root).unwrap();
+    server.scan_library().unwrap();
+    server.set_played_threshold(1).unwrap();
+    server.play_track(&track).unwrap();
+    wait_for_play_count(&server, &track, 1);
+    server.stop_playback().unwrap();
+    server.remove_library_root(&root).unwrap();
+
+    let summary = server.scan_library().unwrap();
+    let entry = server.catalog_page(0, 32).unwrap().entries.remove(0);
+
+    assert_eq!(summary.active_entries, 0);
+    assert_eq!(summary.inactive_entries, 1);
+    assert!(!entry.active);
+    assert_eq!(entry.play_count, 1);
+    server.shutdown().unwrap();
+}
+
+#[test]
 fn selected_roots_and_scanned_tracks_survive_server_relaunch_without_rescanning() {
     let directory = TestDirectory::new();
     let root = directory.0.join("music");

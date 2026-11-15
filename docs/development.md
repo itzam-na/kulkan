@@ -60,7 +60,7 @@ Identity reconciliation is conservative: same-path exact matches preserve the en
 3. Include MP3, PCM WAV, FLAC, Ogg Vorbis, and Opus samples; verify original visible tags and file locations.
 4. Select overlapping folders and a directory symlink as a Library folder; verify one catalog entry per resolved path. Verify a nested symlink is skipped.
 5. Disconnect a selected removable volume or revoke access during a test scan. Confirm the scan reports an incomplete path and does not mark last-known entries missing.
-6. Reconnect/restore access and rescan. Remove a folder and scan again; confirm entries no longer covered by a configured folder become inactive and cannot be selected.
+6. Reconnect/restore access and rescan. Remove folders and scan again, including after removing the last configured folder; confirm entries no longer covered by a configured folder become inactive and cannot be selected.
 7. Compare media file checksums before and after scanning to confirm Kulkán did not modify them.
 8. Relaunch and confirm configured folders, cached tracks, and the saved startup view are restored without an implicit scan; then rescan and confirm the desktop folder chooser still permits access to selected folders.
 9. Verify Scan selected affects only selected folders, including when an unselected configured folder is nested under a selected folder; Scan all scans every configured folder. Confirm scans show a completion summary/errors, and closing Settings does not cancel a scan.

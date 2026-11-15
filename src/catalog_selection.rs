@@ -12,6 +12,10 @@ pub struct SelectionState {
 }
 
 impl SelectionState {
+    pub fn reset(&mut self) {
+        self.anchor = None;
+    }
+
     pub fn select(
         &mut self,
         currently_selected: &BTreeSet<usize>,
@@ -153,6 +157,25 @@ mod tests {
         );
 
         assert_eq!(selected, BTreeSet::from([2, 3, 4, 5]));
+    }
+
+    #[test]
+    fn resetting_selection_starts_a_new_range_at_the_next_click() {
+        let mut selection = SelectionState::default();
+        let selected = selection.select(&BTreeSet::new(), 2, SelectionModifiers::default(), 8);
+        selection.reset();
+
+        let selected = selection.select(
+            &selected,
+            5,
+            SelectionModifiers {
+                control: false,
+                shift: true,
+            },
+            8,
+        );
+
+        assert_eq!(selected, BTreeSet::from([5]));
     }
 
     #[test]
