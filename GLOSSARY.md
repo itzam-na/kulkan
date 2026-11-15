@@ -19,6 +19,9 @@ A condition the listener uses to identify tracks in the library.
 **Library**:
 The listener's local catalog of Library entries, discovered from one or more Library folders.
 
+**Library workspace**:
+The central area of Kulkán for viewing and searching the Library.
+
 **Library entry**:
 A file-backed item in the local catalog, one per resolved file path. Identical audio at distinct paths is represented by separate entries.
 

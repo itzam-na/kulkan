@@ -3,6 +3,7 @@
 ## Project map
 
 - `src/main.rs`: GTK application lifecycle, folder chooser, library controls, catalog presentation, and playback transport controls.
+- `src/library_workspace.rs`: GTK-independent center-destination workflow for Browse and Search, including request effects and stale-completion policy.
 - `crates/kulkan-runtime`: managed server process, single-client activation, GStreamer playback, and the public client/server operations.
 - `crates/kulkan-ipc`: private Unix socket, peer validation, and the versioned length-delimited message protocol.
 - `crates/kulkan-library`: filesystem traversal, read-only metadata discovery through `lofty`, GStreamer duration derivation, scan reconciliation, and catalog presentation data.
@@ -37,6 +38,7 @@ Tests exercise behavior at public boundaries:
 
 - `kulkan_library::scan_library` accepts prior catalog state and selected folders, then returns catalog changes, incomplete paths, and media errors. Integration tests cover duplicate/overlapping folders, selected and nested symlinks, metadata/provenance, read-only media, failed scans, missing files, and removed folders. Selected-folder scans must leave unselected configured folders and their entries/history unchanged.
 - `kulkan_library::search_catalog` applies the public AND criteria and default result ordering. Tests cover case/diacritic-insensitive matching, explicit missing values, numeric ranges, play counts, and ordering.
+- `LibraryWorkspace::dispatch` and `LibraryWorkspace::view` define the deterministic desktop workflow seam. Tests cover Browse navigation, Search criteria/results, paging, hidden Search completion, history refresh, stale requests, and failure behavior without GTK or IPC.
 - `ServerProcess` exposes Library-folder management, explicit selected-folder/all-folder scans, state summaries, bounded catalog pages, and search pages. Child-server integration tests verify persistence of folders/catalog/history/preferences and app-state export/import without copying media.
 - `ServerProcess`/`ServerClient` expose playback and transport snapshots over the child-server IPC. Integration tests use the real GStreamer pipeline with `fakesink` to cover controls, decoding, and media errors without depending on host audio hardware.
 - `ServerProcess`/`ServerClient` expose queue operations and snapshots over the child-server IPC. Integration tests use the real child server and `fakesink` to cover queue ordering, repeats, shuffle, current-entry changes, and failure skipping; GTK queue wiring remains a manual smoke check.
