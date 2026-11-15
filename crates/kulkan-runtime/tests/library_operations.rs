@@ -1,8 +1,9 @@
 use std::fs;
 use std::os::unix::fs::PermissionsExt;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::time::Duration;
+use std::thread;
+use std::time::{Duration, Instant};
 
 use kulkan_runtime::ServerProcess;
 
@@ -52,6 +53,79 @@ fn adding_a_root_does_not_scan_until_the_listener_requests_a_scan() {
     assert_eq!(server.library_state().unwrap().catalog_entries, 1);
 
     server.shutdown().unwrap();
+}
+
+#[test]
+fn selected_parent_folder_scan_does_not_change_an_unselected_nested_folder() {
+    let directory = TestDirectory::new();
+    let parent = directory.0.join("music");
+    let nested = parent.join("archive");
+    fs::create_dir_all(&nested).unwrap();
+    let parent_track = parent.join("one.wav");
+    let nested_track = nested.join("two.wav");
+    write_tagged_pcm_wav(&parent_track);
+    write_tagged_pcm_wav(&nested_track);
+    let socket_path = directory.0.join("server.sock");
+    let executable = PathBuf::from(env!("CARGO_BIN_EXE_kulkan-server"));
+    let mut server = ServerProcess::start_with_audio_sink(
+        &executable,
+        &socket_path,
+        Duration::from_secs(2),
+        Some("fakesink"),
+    )
+    .unwrap();
+    server.add_library_root(&parent).unwrap();
+    server.add_library_root(&nested).unwrap();
+    server.scan_library().unwrap();
+    server.set_played_threshold(1).unwrap();
+    server.play_track(&nested_track).unwrap();
+    wait_for_play_count(&server, &nested_track, 1);
+    server.stop_playback().unwrap();
+    let initial_nested_entry = server
+        .catalog_page(0, 32)
+        .unwrap()
+        .entries
+        .into_iter()
+        .find(|entry| entry.path == nested_track)
+        .unwrap();
+    fs::remove_file(&nested_track).unwrap();
+
+    let scan = server
+        .scan_library_selected(std::slice::from_ref(&parent))
+        .unwrap();
+    let nested_after_scan = server
+        .catalog_page(0, 32)
+        .unwrap()
+        .entries
+        .into_iter()
+        .find(|entry| entry.path == nested_track)
+        .unwrap();
+
+    assert_eq!(nested_after_scan, initial_nested_entry);
+    assert_eq!(scan.active_entries, 2);
+    assert_eq!(scan.inactive_entries, 0);
+    server.shutdown().unwrap();
+}
+
+fn wait_for_play_count(server: &ServerProcess, track: &Path, expected: u64) {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        server.queue_state().unwrap();
+        let page = server.catalog_page(0, 32).unwrap();
+        if page
+            .entries
+            .iter()
+            .any(|entry| entry.path == track && entry.play_count >= expected)
+        {
+            return;
+        }
+        assert!(
+            Instant::now() < deadline,
+            "play count for {} did not reach {expected}",
+            track.display()
+        );
+        thread::sleep(Duration::from_millis(10));
+    }
 }
 
 #[test]

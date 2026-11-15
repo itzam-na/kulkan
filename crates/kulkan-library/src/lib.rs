@@ -187,6 +187,7 @@ pub fn scan_library_selected(
         .collect::<HashSet<_>>();
     let mut next_roots = Vec::new();
     let mut resolved_roots = Vec::new();
+    let mut unscanned_resolved_roots = Vec::new();
     let mut incomplete_paths = BTreeSet::new();
 
     for selected_path in configured_roots {
@@ -199,8 +200,16 @@ pub fn scan_library_selected(
         }
 
         if !roots_to_scan.contains(&selected_path) {
+            let resolved_path = previous_resolved_path(previous, &selected_path).or_else(|| {
+                fs::canonicalize(&selected_path)
+                    .ok()
+                    .filter(|resolved| resolved.is_dir())
+            });
+            if let Some(resolved_path) = &resolved_path {
+                unscanned_resolved_roots.push(resolved_path.clone());
+            }
             next_roots.push(LibraryRoot {
-                resolved_path: previous_resolved_path(previous, &selected_path),
+                resolved_path,
                 selected_path,
             });
             continue;
@@ -233,6 +242,16 @@ pub fn scan_library_selected(
         }
     }
 
+    let excluded_roots = unscanned_resolved_roots
+        .into_iter()
+        .filter(|unscanned| !resolved_roots.contains(unscanned))
+        .filter(|unscanned| {
+            resolved_roots
+                .iter()
+                .any(|scanned| unscanned != scanned && unscanned.starts_with(scanned))
+        })
+        .collect::<Vec<_>>();
+
     let mut entries = previous.entries.clone();
     let mut discovered = HashSet::new();
     let mut enumerated_directories = HashSet::new();
@@ -249,6 +268,7 @@ pub fn scan_library_selected(
             &mut enumerated_directories,
             &mut excluded_symlink_paths,
             &mut incomplete_paths,
+            &excluded_roots,
         );
     }
 
@@ -1371,6 +1391,7 @@ fn enumerate_directory(
     enumerated_directories: &mut HashSet<PathBuf>,
     excluded_symlink_paths: &mut HashSet<PathBuf>,
     incomplete_paths: &mut BTreeSet<PathBuf>,
+    excluded_roots: &[PathBuf],
 ) {
     let resolved_directory = match fs::canonicalize(directory) {
         Ok(path) => path,
@@ -1379,6 +1400,9 @@ fn enumerate_directory(
             return;
         }
     };
+    if excluded_roots.contains(&resolved_directory) {
+        return;
+    }
     if !resolved_directory.starts_with(root) {
         incomplete_paths.insert(directory.to_path_buf());
         return;
@@ -1421,6 +1445,7 @@ fn enumerate_directory(
                 enumerated_directories,
                 excluded_symlink_paths,
                 incomplete_paths,
+                excluded_roots,
             );
         } else if file_type.is_file() && is_audio_candidate(&path) {
             match fs::canonicalize(&path) {
