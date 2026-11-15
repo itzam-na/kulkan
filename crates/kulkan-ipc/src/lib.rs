@@ -10,7 +10,7 @@ use kulkan_library::{CatalogPage, LibraryState, ScanSummary, SearchCriteria};
 use serde::{Deserialize, Serialize};
 
 /// The current wire-protocol version understood by Kulkán clients and servers.
-pub const CURRENT_PROTOCOL_VERSION: u16 = 6;
+pub const CURRENT_PROTOCOL_VERSION: u16 = 7;
 
 /// Maximum JSON envelope size accepted on the local socket.
 pub const MAX_FRAME_SIZE: usize = 64 * 1024;
@@ -32,6 +32,7 @@ pub enum Message {
         limit: usize,
     },
     ScanLibrary,
+    ScanLibrarySelected(Vec<PathBuf>),
     GetPlayedThreshold,
     SetPlayedThreshold(u8),
     PlayedThreshold(u8),

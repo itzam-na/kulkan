@@ -19,7 +19,7 @@ pub use kulkan_ipc::{
 };
 pub use kulkan_library::SearchCriteria;
 use kulkan_library::{
-    Catalog, CatalogPage, LibraryState, ScanSummary, scan_library, search_catalog,
+    Catalog, CatalogPage, LibraryState, ScanSummary, scan_library_selected, search_catalog,
 };
 use serde::{Deserialize, Serialize};
 
@@ -379,28 +379,52 @@ impl LibraryService {
                 })
             }
             Message::ScanLibrary => {
-                let result = scan_library(&self.catalog, &self.selected_roots);
-                let previous_catalog = std::mem::replace(&mut self.catalog, result.catalog);
-                if let Err(error) = self.persist() {
-                    self.catalog = previous_catalog;
-                    return Message::LibraryOperationFailed(error.to_string());
-                }
-                let active_entries = self
-                    .catalog
-                    .entries
-                    .iter()
-                    .filter(|entry| entry.active)
-                    .count();
-                let inactive_entries = self.catalog.entries.len() - active_entries;
-                Message::ScanSummary(ScanSummary {
-                    incomplete_paths: result.incomplete_paths,
-                    media_errors: result.media_errors,
-                    active_entries,
-                    inactive_entries,
-                })
+                let roots = self.selected_roots.clone();
+                self.scan_roots(&roots)
             }
+            Message::ScanLibrarySelected(roots) => self.scan_selected_roots(&roots),
             _ => Message::LibraryOperationFailed("unsupported library operation".to_owned()),
         }
+    }
+
+    fn scan_selected_roots(&mut self, roots: &[PathBuf]) -> Message {
+        if roots.is_empty() {
+            return Message::LibraryOperationFailed(
+                "select at least one Library folder to scan".to_owned(),
+            );
+        }
+        let roots = roots
+            .iter()
+            .map(|path| absolute_path(path))
+            .collect::<Vec<_>>();
+        if roots.iter().any(|path| !self.selected_roots.contains(path)) {
+            return Message::LibraryOperationFailed(
+                "only configured Library folders can be scanned".to_owned(),
+            );
+        }
+        self.scan_roots(&roots)
+    }
+
+    fn scan_roots(&mut self, roots_to_scan: &[PathBuf]) -> Message {
+        let result = scan_library_selected(&self.catalog, &self.selected_roots, roots_to_scan);
+        let previous_catalog = std::mem::replace(&mut self.catalog, result.catalog);
+        if let Err(error) = self.persist() {
+            self.catalog = previous_catalog;
+            return Message::LibraryOperationFailed(error.to_string());
+        }
+        let active_entries = self
+            .catalog
+            .entries
+            .iter()
+            .filter(|entry| entry.active)
+            .count();
+        let inactive_entries = self.catalog.entries.len() - active_entries;
+        Message::ScanSummary(ScanSummary {
+            incomplete_paths: result.incomplete_paths,
+            media_errors: result.media_errors,
+            active_entries,
+            inactive_entries,
+        })
     }
 
     fn state_message(&self) -> Message {
@@ -789,6 +813,11 @@ impl ServerProcess {
         self.client().scan_library()
     }
 
+    /// Runs one explicit scan of the selected configured Library folders.
+    pub fn scan_library_selected(&self, roots: &[PathBuf]) -> io::Result<ScanSummary> {
+        self.client().scan_library_selected(roots)
+    }
+
     /// Returns the current root selection and the number of catalog entries.
     pub fn library_state(&self) -> io::Result<LibraryState> {
         self.client().library_state()
@@ -941,6 +970,13 @@ impl ServerClient {
 
     pub fn scan_library(&self) -> io::Result<ScanSummary> {
         match self.request(Message::ScanLibrary)? {
+            Message::ScanSummary(summary) => Ok(summary),
+            response => unexpected_library_response(response),
+        }
+    }
+
+    pub fn scan_library_selected(&self, roots: &[PathBuf]) -> io::Result<ScanSummary> {
+        match self.request(Message::ScanLibrarySelected(roots.to_vec()))? {
             Message::ScanSummary(summary) => Ok(summary),
             response => unexpected_library_response(response),
         }

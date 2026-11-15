@@ -168,16 +168,37 @@ pub fn present_catalog_entry(entry: &LibraryEntry) -> CatalogRow {
 /// The prior catalog is retained when a selected root becomes unavailable. An entry becomes
 /// inactive only if its containing directory was successfully enumerated or its root was removed.
 pub fn scan_library(previous: &Catalog, roots: &[PathBuf]) -> ScanResult {
+    scan_library_selected(previous, roots, roots)
+}
+
+/// Scans selected roots while preserving the prior catalog for configured roots not being scanned.
+pub fn scan_library_selected(
+    previous: &Catalog,
+    configured_roots: &[PathBuf],
+    roots_to_scan: &[PathBuf],
+) -> ScanResult {
+    let roots_to_scan = roots_to_scan
+        .iter()
+        .map(|path| absolute_path(path))
+        .collect::<HashSet<_>>();
     let mut next_roots = Vec::new();
     let mut resolved_roots = Vec::new();
     let mut incomplete_paths = BTreeSet::new();
 
-    for selected_path in roots {
+    for selected_path in configured_roots {
         let selected_path = absolute_path(selected_path);
         if next_roots
             .iter()
             .any(|root: &LibraryRoot| root.selected_path == selected_path)
         {
+            continue;
+        }
+
+        if !roots_to_scan.contains(&selected_path) {
+            next_roots.push(LibraryRoot {
+                resolved_path: previous_resolved_path(previous, &selected_path),
+                selected_path,
+            });
             continue;
         }
 

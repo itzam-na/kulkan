@@ -25,6 +25,8 @@ use kulkan_runtime::{
 
 const APPLICATION_ID: &str = "org.kulkan.Kulkan";
 
+type CatalogPaging = Rc<RefCell<Option<(ServerClient, SearchCriteria, usize)>>>;
+
 fn main() -> glib::ExitCode {
     match run() {
         Ok(exit_code) => exit_code,
@@ -192,55 +194,84 @@ fn build_main_window(application: &gtk::Application, server_state: Rc<RefCell<Se
     title.add_css_class("title-1");
     title.set_halign(gtk::Align::Start);
     library_sidebar.append(&title);
+
+    let settings_button = gtk::Button::with_label("Settings…");
+    settings_button.update_property(&[gtk::accessible::Property::Label("Open Settings")]);
+    library_sidebar.append(&settings_button);
+
+    let settings_window = gtk::Window::builder()
+        .title("Settings")
+        .transient_for(&window)
+        .modal(true)
+        .default_width(560)
+        .default_height(560)
+        .build();
+    let settings_content = gtk::Box::new(gtk::Orientation::Vertical, 12);
+    settings_content.set_margin_top(16);
+    settings_content.set_margin_bottom(16);
+    settings_content.set_margin_start(16);
+    settings_content.set_margin_end(16);
+
     let roots_label = gtk::Label::new(Some("Library folders"));
     roots_label.set_halign(gtk::Align::Start);
-    library_sidebar.append(&roots_label);
+    roots_label.add_css_class("heading");
+    settings_content.append(&roots_label);
     let roots_list = gtk::ListBox::new();
-    roots_list.set_selection_mode(gtk::SelectionMode::Single);
+    roots_list.set_selection_mode(gtk::SelectionMode::Multiple);
     roots_list.update_property(&[gtk::accessible::Property::Label("Library folders")]);
     let roots_scroll = gtk::ScrolledWindow::builder()
         .child(&roots_list)
         .vexpand(true)
+        .min_content_height(128)
         .build();
-    library_sidebar.append(&roots_scroll);
+    settings_content.append(&roots_scroll);
     let root_actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
     let add_root = gtk::Button::with_label("Add Folder…");
-    let remove_root = gtk::Button::with_label("Remove");
+    let remove_root = gtk::Button::with_label("Remove Selected");
     remove_root.set_sensitive(false);
     root_actions.append(&add_root);
     root_actions.append(&remove_root);
-    library_sidebar.append(&root_actions);
-    let scan_button = gtk::Button::with_label("Scan Library");
-    library_sidebar.append(&scan_button);
-    let library_settings = gtk::Expander::new(Some("Library settings & data"));
-    let library_settings_content = gtk::Box::new(gtk::Orientation::Vertical, 8);
-    library_settings_content.set_margin_top(8);
-    library_settings_content.set_margin_start(8);
-    library_settings_content.set_margin_end(8);
+    settings_content.append(&root_actions);
+    let scan_actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    let scan_selected = gtk::Button::with_label("Scan selected");
+    scan_selected.set_sensitive(false);
+    let scan_all = gtk::Button::with_label("Scan all");
+    scan_actions.append(&scan_selected);
+    scan_actions.append(&scan_all);
+    settings_content.append(&scan_actions);
+    let settings_status = gtk::Label::new(None);
+    settings_status.set_wrap(true);
+    settings_status.set_selectable(true);
+    settings_status.set_halign(gtk::Align::Start);
+    settings_content.append(&settings_status);
+
+    let preferences_heading = gtk::Label::new(Some("Playback and data"));
+    preferences_heading.set_halign(gtk::Align::Start);
+    preferences_heading.add_css_class("heading");
+    settings_content.append(&preferences_heading);
     let threshold_label = gtk::Label::new(Some("Played threshold (%)"));
     threshold_label.set_halign(gtk::Align::Start);
-    library_settings_content.append(&threshold_label);
+    settings_content.append(&threshold_label);
     let played_threshold = gtk::SpinButton::with_range(1.0, 100.0, 1.0);
     played_threshold.set_value(75.0);
     played_threshold.set_sensitive(false);
     played_threshold.set_tooltip_text(Some("The share of a track needed to count as played."));
     played_threshold
         .update_property(&[gtk::accessible::Property::Label("Played threshold percent")]);
-    library_settings_content.append(&played_threshold);
+    settings_content.append(&played_threshold);
     let clear_all_history = gtk::Button::with_label("Clear All Play History");
     clear_all_history.set_sensitive(false);
-    library_settings_content.append(&clear_all_history);
+    settings_content.append(&clear_all_history);
     let export_state = gtk::Button::with_label("Export State…");
     let import_state = gtk::Button::with_label("Import State…");
     let reset_state = gtk::Button::with_label("Reset App State…");
     export_state.set_sensitive(false);
     import_state.set_sensitive(false);
     reset_state.set_sensitive(false);
-    library_settings_content.append(&export_state);
-    library_settings_content.append(&import_state);
-    library_settings_content.append(&reset_state);
-    library_settings.set_child(Some(&library_settings_content));
-    library_sidebar.append(&library_settings);
+    settings_content.append(&export_state);
+    settings_content.append(&import_state);
+    settings_content.append(&reset_state);
+    settings_window.set_child(Some(&settings_content));
 
     let main_content = gtk::Box::new(gtk::Orientation::Vertical, 8);
     let status = gtk::Label::new(None);
@@ -547,6 +578,7 @@ fn build_main_window(application: &gtk::Application, server_state: Rc<RefCell<Se
     window.set_child(Some(&shell));
 
     let roots_model = Rc::new(RefCell::new(Vec::<PathBuf>::new()));
+    let scan_in_progress = Rc::new(Cell::new(false));
     let catalog_entries = Rc::new(RefCell::new(Vec::<LibraryEntry>::new()));
     let catalog_details = Rc::new(RefCell::new(Vec::<LibraryEntry>::new()));
     let queue_entries = Rc::new(RefCell::new(Vec::<QueueEntry>::new()));
@@ -580,6 +612,15 @@ fn build_main_window(application: &gtk::Application, server_state: Rc<RefCell<Se
         play_count: play_count_filter.clone(),
     };
     let syncing_threshold = Rc::new(Cell::new(false));
+    let scan_ui = ScanUi {
+        status: status.clone(),
+        settings_status: settings_status.clone(),
+        scan_selected: scan_selected.clone(),
+        scan_all: scan_all.clone(),
+        load_more: load_more.clone(),
+        paging: Rc::clone(&catalog_paging),
+        in_progress: Rc::clone(&scan_in_progress),
+    };
     let queue_ui = QueueUi {
         list: queue_list.clone(),
         entries: Rc::clone(&queue_entries),
@@ -614,6 +655,7 @@ fn build_main_window(application: &gtk::Application, server_state: Rc<RefCell<Se
             reset_state: reset_state.clone(),
             retry: retry.clone(),
             roots_model: Rc::clone(&roots_model),
+            scan_in_progress: Rc::clone(&scan_in_progress),
             catalog_entries: Rc::clone(&catalog_entries),
             catalog_details: Rc::clone(&catalog_details),
             catalog_paging: Rc::clone(&catalog_paging),
@@ -625,7 +667,9 @@ fn build_main_window(application: &gtk::Application, server_state: Rc<RefCell<Se
             results_panel: results_panel.clone(),
             no_matches: no_matches.clone(),
             status: status.clone(),
-            scan_button: scan_button.clone(),
+            scan_selected: scan_selected.clone(),
+            scan_all: scan_all.clone(),
+            settings_status: settings_status.clone(),
             load_more: load_more.clone(),
             played_threshold: played_threshold.clone(),
             syncing_threshold: Rc::clone(&syncing_threshold),
@@ -645,6 +689,12 @@ fn build_main_window(application: &gtk::Application, server_state: Rc<RefCell<Se
             poll_playback: Arc::clone(&poll_playback),
         },
     );
+    let settings_dialog = settings_window.clone();
+    settings_button.connect_clicked(move |_| settings_dialog.present());
+    settings_window.connect_close_request(|dialog| {
+        dialog.hide();
+        glib::Propagation::Stop
+    });
     let selection_queue_ui = queue_ui.clone();
     queue_list.connect_row_selected(move |_, _| {
         selection_queue_ui.update_actions();
@@ -1204,16 +1254,26 @@ fn build_main_window(application: &gtk::Application, server_state: Rc<RefCell<Se
         Arc::clone(&poll_playback),
     );
     let remove_for_selection = remove_root.clone();
+    let scan_selected_for_selection = scan_selected.clone();
+    let scan_all_for_selection = scan_all.clone();
+    let scan_in_progress_for_selection = Rc::clone(&scan_in_progress);
+    let selected_root_model = Rc::clone(&roots_model);
     let selection_state = Rc::clone(&server_state);
-    roots_list.connect_row_selected(move |_, row| {
-        remove_for_selection
-            .set_sensitive(row.is_some() && selection_state.borrow().client().is_some());
+    roots_list.connect_selected_rows_changed(move |list| {
+        let has_selection = !list.selected_rows().is_empty();
+        let server_available = selection_state.borrow().client().is_some();
+        let configured_folders = !selected_root_model.borrow().is_empty();
+        remove_for_selection.set_sensitive(has_selection && server_available);
+        let can_scan = server_available && !scan_in_progress_for_selection.get();
+        scan_selected_for_selection.set_sensitive(has_selection && can_scan);
+        scan_all_for_selection.set_sensitive(configured_folders && can_scan);
     });
 
     let chooser_state = Rc::clone(&server_state);
     let chooser_sender = sender.clone();
     let chooser_status = status.clone();
-    let chooser_parent = window.clone();
+    let chooser_settings_status = settings_status.clone();
+    let chooser_parent = settings_window.clone();
     add_root.connect_clicked(move |_| {
         let chooser = gtk::FileChooserNative::new(
             Some("Choose Library Folder"),
@@ -1225,6 +1285,7 @@ fn build_main_window(application: &gtk::Application, server_state: Rc<RefCell<Se
         let state = Rc::clone(&chooser_state);
         let sender = chooser_sender.clone();
         let status = chooser_status.clone();
+        let settings_status = chooser_settings_status.clone();
         chooser.connect_response(move |chooser, response| {
             if response == gtk::ResponseType::Accept {
                 match chooser.file().and_then(|file| file.path()) {
@@ -1232,8 +1293,12 @@ fn build_main_window(application: &gtk::Application, server_state: Rc<RefCell<Se
                         Some(client) => {
                             send_root_operation(client, path, sender.clone(), false);
                             status.set_text("Adding folder…");
+                            settings_status.set_text("Adding folder…");
                         }
-                        None => status.set_text("Server unavailable. Select Retry."),
+                        None => {
+                            status.set_text("Server unavailable. Select Retry.");
+                            settings_status.set_text("Server unavailable. Select Retry.");
+                        }
                     },
                     None => {
                         status.set_text("The selected folder is not available as a local path.")
@@ -1249,44 +1314,73 @@ fn build_main_window(application: &gtk::Application, server_state: Rc<RefCell<Se
     let remove_roots = Rc::clone(&roots_model);
     let remove_sender = sender.clone();
     let remove_status = status.clone();
+    let remove_settings_status = settings_status.clone();
     let root_list_for_remove = roots_list.clone();
     remove_root.connect_clicked(move |_| {
-        let Some(row) = root_list_for_remove.selected_row() else {
+        let paths = selected_library_folders(&root_list_for_remove, &remove_roots);
+        if paths.is_empty() {
             return;
-        };
-        let Some(path) = remove_roots.borrow().get(row.index() as usize).cloned() else {
-            return;
-        };
+        }
         let Some(client) = remove_state.borrow().client() else {
             remove_status.set_text("Server unavailable. Select Retry.");
+            remove_settings_status.set_text("Server unavailable. Select Retry.");
             return;
         };
-        send_root_operation(client, path, remove_sender.clone(), true);
+        send_remove_roots(client, paths, remove_sender.clone());
         remove_status.set_text("Removing folder…");
+        remove_settings_status.set_text("Removing folder…");
     });
 
     let scan_state = Rc::clone(&server_state);
     let scan_sender = sender.clone();
-    let scan_status = status.clone();
-    let scan_button_for_action = scan_button.clone();
-    let scan_load_more = load_more.clone();
-    let scan_paging = Rc::clone(&catalog_paging);
+    let scan_selected_ui = scan_ui.clone();
     let scan_search = Rc::clone(&active_search);
-    scan_button.connect_clicked(move |_| {
+    let scan_roots_list = roots_list.clone();
+    let scan_roots_model = Rc::clone(&roots_model);
+    scan_selected.connect_clicked(move |_| {
+        let folders = selected_library_folders(&scan_roots_list, &scan_roots_model);
+        if folders.is_empty() {
+            return;
+        }
         let Some(client) = scan_state.borrow().client() else {
-            scan_status.set_text("Server unavailable. Select Retry.");
+            scan_selected_ui
+                .status
+                .set_text("Server unavailable. Select Retry.");
+            scan_selected_ui
+                .settings_status
+                .set_text("Server unavailable. Select Retry.");
             return;
         };
-        scan_button_for_action.set_sensitive(false);
-        scan_load_more.set_visible(false);
-        scan_load_more.set_sensitive(false);
-        scan_paging.borrow_mut().take();
-        scan_status.set_text("Scanning selected folders…");
-        let sender = scan_sender.clone();
-        let criteria = scan_search.borrow().clone();
-        thread::spawn(move || {
-            let _ = sender.send(UiEvent::Catalog(read_scanned_catalog(&client, criteria)));
-        });
+        start_catalog_scan(
+            client,
+            Some(folders),
+            scan_sender.clone(),
+            scan_search.borrow().clone(),
+            &scan_selected_ui,
+        );
+    });
+
+    let scan_all_state = Rc::clone(&server_state);
+    let scan_all_sender = sender.clone();
+    let scan_all_ui = scan_ui.clone();
+    let scan_all_search = Rc::clone(&active_search);
+    scan_all.connect_clicked(move |_| {
+        let Some(client) = scan_all_state.borrow().client() else {
+            scan_all_ui
+                .status
+                .set_text("Server unavailable. Select Retry.");
+            scan_all_ui
+                .settings_status
+                .set_text("Server unavailable. Select Retry.");
+            return;
+        };
+        start_catalog_scan(
+            client,
+            None,
+            scan_all_sender.clone(),
+            scan_all_search.borrow().clone(),
+            &scan_all_ui,
+        );
     });
 
     let paging_for_button = Rc::clone(&catalog_paging);
@@ -1325,8 +1419,10 @@ fn build_main_window(application: &gtk::Application, server_state: Rc<RefCell<Se
             set_server_controls_sensitive(
                 &add_root,
                 &remove_root,
-                &scan_button,
-                roots_list.selected_row().is_some(),
+                &scan_selected,
+                &scan_all,
+                !roots_list.selected_rows().is_empty(),
+                !roots_model.borrow().is_empty(),
                 true,
             );
             startup_add_all.set_sensitive(true);
@@ -1352,7 +1448,15 @@ fn build_main_window(application: &gtk::Application, server_state: Rc<RefCell<Se
             import_state.set_sensitive(false);
             reset_state.set_sensitive(false);
             played_threshold.set_sensitive(false);
-            set_server_controls_sensitive(&add_root, &remove_root, &scan_button, false, false);
+            set_server_controls_sensitive(
+                &add_root,
+                &remove_root,
+                &scan_selected,
+                &scan_all,
+                false,
+                false,
+                false,
+            );
             startup_add_all.set_sensitive(false);
             startup_repeat.set_sensitive(false);
             startup_shuffle.set_sensitive(false);
@@ -1366,7 +1470,9 @@ fn build_main_window(application: &gtk::Application, server_state: Rc<RefCell<Se
     let retry_sender = sender;
     let retry_add = add_root.clone();
     let retry_remove = remove_root.clone();
-    let retry_scan = scan_button.clone();
+    let retry_scan_selected = scan_selected.clone();
+    let retry_scan_all = scan_all.clone();
+    let retry_roots_model = Rc::clone(&roots_model);
     let retry_add_all = add_all.clone();
     let retry_repeat = queue_repeat.clone();
     let retry_shuffle = queue_shuffle.clone();
@@ -1392,8 +1498,10 @@ fn build_main_window(application: &gtk::Application, server_state: Rc<RefCell<Se
                 set_server_controls_sensitive(
                     &retry_add,
                     &retry_remove,
-                    &retry_scan,
-                    roots_list.selected_row().is_some(),
+                    &retry_scan_selected,
+                    &retry_scan_all,
+                    !roots_list.selected_rows().is_empty(),
+                    !retry_roots_model.borrow().is_empty(),
                     true,
                 );
                 retry_add_all.set_sensitive(true);
@@ -1420,7 +1528,15 @@ fn build_main_window(application: &gtk::Application, server_state: Rc<RefCell<Se
                 retry_import.set_sensitive(false);
                 retry_reset.set_sensitive(false);
                 retry_threshold.set_sensitive(false);
-                set_server_controls_sensitive(&retry_add, &retry_remove, &retry_scan, false, false);
+                set_server_controls_sensitive(
+                    &retry_add,
+                    &retry_remove,
+                    &retry_scan_selected,
+                    &retry_scan_all,
+                    false,
+                    false,
+                    false,
+                );
                 retry_add_all.set_sensitive(false);
                 retry_repeat.set_sensitive(false);
                 retry_shuffle.set_sensitive(false);
@@ -1437,7 +1553,7 @@ fn build_main_window(application: &gtk::Application, server_state: Rc<RefCell<Se
     let shortcut_play_pause = play_pause.clone();
     let shortcut_previous = previous_track.clone();
     let shortcut_next = next_track.clone();
-    let shortcut_scan = scan_button.clone();
+    let shortcut_scan = scan_all.clone();
     let shortcut_add_selected = add_selected.clone();
     let shortcut_export = export_state.clone();
     let shortcut_import = import_state.clone();
@@ -1579,9 +1695,10 @@ struct LibraryUi {
     reset_state: gtk::Button,
     retry: gtk::Button,
     roots_model: Rc<RefCell<Vec<PathBuf>>>,
+    scan_in_progress: Rc<Cell<bool>>,
     catalog_entries: Rc<RefCell<Vec<LibraryEntry>>>,
     catalog_details: Rc<RefCell<Vec<LibraryEntry>>>,
-    catalog_paging: Rc<RefCell<Option<(ServerClient, SearchCriteria, usize)>>>,
+    catalog_paging: CatalogPaging,
     active_search: Rc<RefCell<Option<SearchCriteria>>>,
     search_generation: Rc<Cell<u64>>,
     actions: CatalogActions,
@@ -1590,7 +1707,9 @@ struct LibraryUi {
     results_panel: gtk::Box,
     no_matches: gtk::Label,
     status: gtk::Label,
-    scan_button: gtk::Button,
+    scan_selected: gtk::Button,
+    scan_all: gtk::Button,
+    settings_status: gtk::Label,
     load_more: gtk::Button,
     played_threshold: gtk::SpinButton,
     syncing_threshold: Rc<Cell<bool>>,
@@ -1599,6 +1718,17 @@ struct LibraryUi {
     queue: QueueUi,
     playback: PlaybackUi,
     poll_playback: Arc<AtomicBool>,
+}
+
+#[derive(Clone)]
+struct ScanUi {
+    status: gtk::Label,
+    settings_status: gtk::Label,
+    scan_selected: gtk::Button,
+    scan_all: gtk::Button,
+    load_more: gtk::Button,
+    paging: CatalogPaging,
+    in_progress: Rc<Cell<bool>>,
 }
 
 #[derive(Clone)]
@@ -1829,6 +1959,7 @@ fn install_library_events(receiver: Receiver<UiEvent>, ui: LibraryUi) {
         reset_state,
         retry,
         roots_model,
+        scan_in_progress,
         catalog_entries,
         catalog_details,
         catalog_paging,
@@ -1840,7 +1971,9 @@ fn install_library_events(receiver: Receiver<UiEvent>, ui: LibraryUi) {
         results_panel,
         no_matches,
         status,
-        scan_button,
+        scan_selected,
+        scan_all,
+        settings_status,
         load_more,
         played_threshold,
         syncing_threshold,
@@ -1856,6 +1989,15 @@ fn install_library_events(receiver: Receiver<UiEvent>, ui: LibraryUi) {
                 UiEvent::RestoredLibrary(Ok((state, page, threshold, client))) => {
                     *roots_model.borrow_mut() = state.selected_roots.clone();
                     replace_root_rows(&roots_list, &state.selected_roots);
+                    set_server_controls_sensitive(
+                        &add_root,
+                        &remove_root,
+                        &scan_selected,
+                        &scan_all,
+                        !roots_list.selected_rows().is_empty(),
+                        !state.selected_roots.is_empty(),
+                        true,
+                    );
                     remember_catalog_entries(&catalog_details, &page.entries);
                     replace_catalog_rows(&catalog_list, &page.entries, &catalog_entries, &actions);
                     active_search.borrow_mut().take();
@@ -2031,8 +2173,10 @@ fn install_library_events(receiver: Receiver<UiEvent>, ui: LibraryUi) {
                     set_server_controls_sensitive(
                         &add_root,
                         &remove_root,
-                        &scan_button,
-                        roots_list.selected_row().is_some(),
+                        &scan_selected,
+                        &scan_all,
+                        !roots_list.selected_rows().is_empty(),
+                        !roots_model.borrow().is_empty(),
                         true,
                     );
                     search_button.set_sensitive(true);
@@ -2105,17 +2249,39 @@ fn install_library_events(receiver: Receiver<UiEvent>, ui: LibraryUi) {
                 UiEvent::Roots(Ok(state)) => {
                     *roots_model.borrow_mut() = state.selected_roots.clone();
                     replace_root_rows(&roots_list, &state.selected_roots);
-                    status
-                        .set_text("Library folders updated. Scan Library to refresh the catalog.");
+                    set_server_controls_sensitive(
+                        &add_root,
+                        &remove_root,
+                        &scan_selected,
+                        &scan_all,
+                        !roots_list.selected_rows().is_empty(),
+                        !state.selected_roots.is_empty(),
+                        actions.server_state.borrow().client().is_some(),
+                    );
+                    let message = "Library folders updated. Choose Scan selected or Scan all to refresh the catalog.";
+                    status.set_text(message);
+                    settings_status.set_text(message);
                 }
                 UiEvent::Roots(Err(error)) => {
                     status.set_text(&format!("Library operation failed: {error}"));
+                    settings_status.set_text(&format!("Library operation failed: {error}"));
                 }
                 UiEvent::Catalog(Ok((summary, page, client, criteria))) => {
+                    scan_in_progress.set(false);
                     remember_catalog_entries(&catalog_details, &page.entries);
                     replace_catalog_rows(&catalog_list, &page.entries, &catalog_entries, &actions);
-                    scan_button.set_sensitive(true);
-                    status.set_text(&scan_status_text(&summary));
+                    set_server_controls_sensitive(
+                        &add_root,
+                        &remove_root,
+                        &scan_selected,
+                        &scan_all,
+                        !roots_list.selected_rows().is_empty(),
+                        !roots_model.borrow().is_empty(),
+                        true,
+                    );
+                    let scan_status = scan_status_text(&summary);
+                    status.set_text(&scan_status);
+                    settings_status.set_text(&scan_status);
                     if let Some(criteria) = criteria {
                         *active_search.borrow_mut() = Some(criteria.clone());
                         replace_search_chips(&search_chips, &criteria);
@@ -2149,8 +2315,18 @@ fn install_library_events(receiver: Receiver<UiEvent>, ui: LibraryUi) {
                         .set_sensitive(summary.active_entries + summary.inactive_entries > 0);
                 }
                 UiEvent::Catalog(Err(error)) => {
-                    scan_button.set_sensitive(true);
+                    scan_in_progress.set(false);
+                    set_server_controls_sensitive(
+                        &add_root,
+                        &remove_root,
+                        &scan_selected,
+                        &scan_all,
+                        !roots_list.selected_rows().is_empty(),
+                        !roots_model.borrow().is_empty(),
+                        true,
+                    );
                     status.set_text(&format!("Library scan failed: {error}"));
+                    settings_status.set_text(&format!("Library scan failed: {error}"));
                 }
                 UiEvent::CatalogPage(Ok(page)) => {
                     remember_catalog_entries(&catalog_details, &page.entries);
@@ -2212,10 +2388,13 @@ fn install_library_events(receiver: Receiver<UiEvent>, ui: LibraryUi) {
                             set_server_controls_sensitive(
                                 &add_root,
                                 &remove_root,
-                                &scan_button,
+                                &scan_selected,
+                                &scan_all,
+                                false,
                                 false,
                                 false,
                             );
+                            settings_status.set_text("Server unavailable. Select Retry.");
                             search_button.set_sensitive(false);
                             add_selected.set_sensitive(false);
                             add_all.set_sensitive(false);
@@ -2596,6 +2775,18 @@ fn selected_active_tracks(
         .collect()
 }
 
+fn selected_library_folders(
+    list: &gtk::ListBox,
+    folders: &Rc<RefCell<Vec<PathBuf>>>,
+) -> Vec<PathBuf> {
+    let mut rows = list.selected_rows();
+    rows.sort_by_key(|row| row.index());
+    let folders = folders.borrow();
+    rows.into_iter()
+        .filter_map(|row| folders.get(row.index() as usize).cloned())
+        .collect()
+}
+
 fn replace_queue_rows(
     list: &gtk::ListBox,
     entries: &[QueueEntry],
@@ -2871,6 +3062,22 @@ fn send_root_operation(client: ServerClient, path: PathBuf, sender: Sender<UiEve
     });
 }
 
+fn send_remove_roots(client: ServerClient, roots: Vec<PathBuf>, sender: Sender<UiEvent>) {
+    thread::spawn(move || {
+        let result = (|| -> std::io::Result<LibraryState> {
+            let mut state = None;
+            for root in roots {
+                state = Some(client.remove_library_root(&root)?);
+            }
+            state.ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::InvalidInput, "no folders were selected")
+            })
+        })()
+        .map_err(|error| error.to_string());
+        let _ = sender.send(UiEvent::Roots(result));
+    });
+}
+
 fn send_threshold_operation(client: ServerClient, percent: u8, sender: Sender<UiEvent>) {
     thread::spawn(move || {
         let result = client
@@ -2947,8 +3154,35 @@ fn send_clear_all_history(
     });
 }
 
+fn start_catalog_scan(
+    client: ServerClient,
+    folders: Option<Vec<PathBuf>>,
+    sender: Sender<UiEvent>,
+    criteria: Option<SearchCriteria>,
+    ui: &ScanUi,
+) {
+    ui.in_progress.set(true);
+    ui.scan_selected.set_sensitive(false);
+    ui.scan_all.set_sensitive(false);
+    ui.load_more.set_visible(false);
+    ui.load_more.set_sensitive(false);
+    ui.paging.borrow_mut().take();
+    let status_text = if folders.is_some() {
+        "Scanning selected folders…"
+    } else {
+        "Scanning all Library folders…"
+    };
+    ui.status.set_text(status_text);
+    ui.settings_status.set_text(status_text);
+    thread::spawn(move || {
+        let result = read_scanned_catalog(&client, folders.as_deref(), criteria);
+        let _ = sender.send(UiEvent::Catalog(result));
+    });
+}
+
 fn read_scanned_catalog(
     client: &ServerClient,
+    folders: Option<&[PathBuf]>,
     criteria: Option<SearchCriteria>,
 ) -> Result<
     (
@@ -2959,7 +3193,11 @@ fn read_scanned_catalog(
     ),
     String,
 > {
-    let summary = client.scan_library().map_err(|error| error.to_string())?;
+    let summary = match folders {
+        Some(folders) => client.scan_library_selected(folders),
+        None => client.scan_library(),
+    }
+    .map_err(|error| error.to_string())?;
     let all_tracks = SearchCriteria::default();
     let page_criteria = criteria.as_ref().unwrap_or(&all_tracks);
     let page = client
@@ -3039,11 +3277,14 @@ fn scan_status_text(summary: &ScanSummary) -> String {
 fn set_server_controls_sensitive(
     add_root: &gtk::Button,
     remove_root: &gtk::Button,
-    scan_button: &gtk::Button,
-    root_is_selected: bool,
+    scan_selected: &gtk::Button,
+    scan_all: &gtk::Button,
+    has_selected_roots: bool,
+    has_configured_roots: bool,
     sensitive: bool,
 ) {
     add_root.set_sensitive(sensitive);
-    scan_button.set_sensitive(sensitive);
-    remove_root.set_sensitive(sensitive && root_is_selected);
+    scan_selected.set_sensitive(sensitive && has_selected_roots);
+    scan_all.set_sensitive(sensitive && has_configured_roots);
+    remove_root.set_sensitive(sensitive && has_selected_roots);
 }

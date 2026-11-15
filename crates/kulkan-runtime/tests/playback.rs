@@ -283,6 +283,68 @@ fn history_can_be_cleared_for_one_or_all_inactive_entries_without_removing_them(
 }
 
 #[test]
+fn scanning_selected_library_folders_preserves_unselected_entries_and_history() {
+    let directory = TestDirectory::new();
+    let selected_root = directory.0.join("selected");
+    let unselected_root = directory.0.join("unselected");
+    fs::create_dir(&selected_root).unwrap();
+    fs::create_dir(&unselected_root).unwrap();
+    let selected_track = selected_root.join("selected.wav");
+    let new_selected_track = selected_root.join("new-selected.wav");
+    let unselected_track = unselected_root.join("unselected.wav");
+    write_pcm_wav(&selected_track, 80_000);
+    write_pcm_wav(&unselected_track, 80_000);
+    let mut server = start_headless_server(&directory);
+    server.add_library_root(&selected_root).unwrap();
+    server.add_library_root(&unselected_root).unwrap();
+    server.scan_library().unwrap();
+    server.set_played_threshold(1).unwrap();
+    server.play_track(&unselected_track).unwrap();
+    wait_for_count(&server, &unselected_track, 1);
+    server.stop_playback().unwrap();
+    fs::remove_file(&unselected_track).unwrap();
+    write_pcm_wav(&new_selected_track, 80_000);
+
+    let selected_scan = server
+        .scan_library_selected(std::slice::from_ref(&selected_root))
+        .unwrap();
+
+    assert_eq!(selected_scan.active_entries, 3);
+    assert_eq!(selected_scan.inactive_entries, 0);
+    let unselected_after_partial_scan = server
+        .catalog_page(0, 32)
+        .unwrap()
+        .entries
+        .into_iter()
+        .find(|entry| entry.path == unselected_track)
+        .expect("unselected folder entries remain in the catalog");
+    assert!(unselected_after_partial_scan.active);
+    assert_eq!(unselected_after_partial_scan.play_count, 1);
+    assert!(
+        server
+            .catalog_page(0, 32)
+            .unwrap()
+            .entries
+            .iter()
+            .any(|entry| entry.path == new_selected_track && entry.active)
+    );
+
+    let scan_all = server.scan_library().unwrap();
+    assert_eq!(scan_all.active_entries, 2);
+    assert_eq!(scan_all.inactive_entries, 1);
+    let unselected_after_full_scan = server
+        .catalog_page(0, 32)
+        .unwrap()
+        .entries
+        .into_iter()
+        .find(|entry| entry.path == unselected_track)
+        .expect("the removed track history remains in the catalog");
+    assert!(!unselected_after_full_scan.active);
+    assert_eq!(unselected_after_full_scan.play_count, 1);
+    server.shutdown().unwrap();
+}
+
+#[test]
 fn every_v1_audio_format_decodes_through_the_child_server() {
     let directory = TestDirectory::new();
     let mut server = start_headless_server(&directory);
