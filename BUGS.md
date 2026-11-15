@@ -1,0 +1,4 @@
+- Clicking twice on a Queue entry selects the text. This shouldn't happen. Instead, the track should play and then continue the queue from there without modifying it.
+- Clicking twice on a Search/List entry should play the track. Then, when that track ends, it should continue with the next one, forming a kind of implicit queue. If there's already a queue when the double click is performed, a dialog should open saying the queue will be erased and ask for confirmation with the options below. A checkbox saying "Remember my decision" should be present and a setting describing the behaviour should exist on the Settings page.
+- On the settings page there should be a "Playing from the List behaviour" configuration with options "Disabled", "Substitute Queue", "Replace first", "Listen Next", "Add to Queue" and "Ask me".
+- The 
