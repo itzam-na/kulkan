@@ -13,6 +13,7 @@ use kulkan_ipc::{
 use serde::{Deserialize, Serialize};
 
 use crate::playback::PlaybackService;
+use crate::playback_attempt::PlaybackAttempt;
 use crate::{LibraryService, PersistedLibraryState};
 
 const QUEUE_STATE_VERSION: u16 = 1;
@@ -48,73 +49,6 @@ struct PortableAppState {
     version: u16,
     library: PersistedLibraryState,
     queue: PersistedQueueState,
-}
-
-struct PlaybackAttempt {
-    track: PathBuf,
-    threshold_percent: u8,
-    heard_segments: Vec<(u64, u64)>,
-    last_position_ms: u64,
-    qualified: bool,
-    seeked_to_end: bool,
-}
-
-impl PlaybackAttempt {
-    fn new(track: PathBuf, threshold_percent: u8, position_ms: u64) -> Self {
-        Self {
-            track,
-            threshold_percent,
-            heard_segments: Vec::new(),
-            last_position_ms: position_ms,
-            qualified: false,
-            seeked_to_end: false,
-        }
-    }
-
-    fn add_heard_segment(&mut self, start_ms: u64, end_ms: u64) {
-        if start_ms >= end_ms {
-            return;
-        }
-        let mut start = start_ms;
-        let mut end = end_ms;
-        let mut merged = Vec::with_capacity(self.heard_segments.len() + 1);
-        let mut inserted = false;
-        for (segment_start, segment_end) in self.heard_segments.drain(..) {
-            if segment_end < start {
-                merged.push((segment_start, segment_end));
-            } else if end < segment_start {
-                if !inserted {
-                    merged.push((start, end));
-                    inserted = true;
-                }
-                merged.push((segment_start, segment_end));
-            } else {
-                start = start.min(segment_start);
-                end = end.max(segment_end);
-            }
-        }
-        if !inserted {
-            merged.push((start, end));
-        }
-        self.heard_segments = merged;
-    }
-
-    fn heard_milliseconds(&self) -> u64 {
-        self.heard_segments
-            .iter()
-            .map(|(start, end)| end.saturating_sub(*start))
-            .fold(0, u64::saturating_add)
-    }
-
-    fn should_qualify(&self, snapshot: &PlaybackSnapshot) -> bool {
-        match snapshot.duration_ms.filter(|duration| *duration > 0) {
-            Some(duration) => {
-                u128::from(self.heard_milliseconds()) * 100
-                    >= u128::from(duration) * u128::from(self.threshold_percent)
-            }
-            None => snapshot.status == PlaybackStatus::Ended && !self.seeked_to_end,
-        }
-    }
 }
 
 impl QueueService {
@@ -467,31 +401,11 @@ impl QueueService {
         library: &mut LibraryService,
         snapshot: &PlaybackSnapshot,
     ) -> Result<(), String> {
-        let mut newly_qualified = None;
-        if let Some(attempt) = self.attempt.as_mut()
-            && snapshot.track.as_ref() == Some(&attempt.track)
-        {
-            if attempt.seeked_to_end
-                && snapshot.status == PlaybackStatus::Playing
-                && snapshot.position_ms > attempt.last_position_ms
-            {
-                attempt.seeked_to_end = false;
-            }
-            if matches!(
-                snapshot.status,
-                PlaybackStatus::Playing
-                    | PlaybackStatus::Paused
-                    | PlaybackStatus::Ended
-                    | PlaybackStatus::Failed
-            ) {
-                attempt.add_heard_segment(attempt.last_position_ms, snapshot.position_ms);
-            }
-            attempt.last_position_ms = snapshot.position_ms;
-
-            if !attempt.qualified && attempt.should_qualify(snapshot) {
-                newly_qualified = Some(attempt.track.clone());
-            }
-        }
+        let newly_qualified = self.attempt.as_mut().and_then(|attempt| {
+            attempt
+                .observe(snapshot)
+                .then(|| attempt.track().to_path_buf())
+        });
 
         if let Some(track) = newly_qualified {
             if let Some(play_count) = library.record_qualifying_play(&track)? {
@@ -500,10 +414,8 @@ impl QueueService {
                     play_count,
                 });
             }
-            if let Some(attempt) = self.attempt.as_mut()
-                && attempt.track == track
-            {
-                attempt.qualified = true;
+            if let Some(attempt) = self.attempt.as_mut() {
+                attempt.mark_qualified();
             }
         }
         if snapshot.status == PlaybackStatus::Failed {
@@ -558,10 +470,7 @@ impl QueueService {
         match self.playback.handle(Message::SeekPlayback(position_ms)) {
             Message::PlaybackState(snapshot) => {
                 if let Some(attempt) = self.attempt.as_mut() {
-                    attempt.last_position_ms = snapshot.position_ms;
-                    attempt.seeked_to_end = snapshot
-                        .duration_ms
-                        .is_none_or(|duration| duration == 0 || position_ms >= duration);
+                    attempt.seeked(position_ms, &snapshot);
                 }
                 Message::PlaybackState(snapshot)
             }
@@ -904,46 +813,4 @@ enum AdvanceKind {
     Finished,
     Failed,
     Skipped,
-}
-
-#[cfg(test)]
-mod tests {
-    use std::path::PathBuf;
-
-    use super::PlaybackAttempt;
-    use kulkan_ipc::{PlaybackSnapshot, PlaybackStatus};
-
-    fn snapshot(status: PlaybackStatus, duration_ms: Option<u64>) -> PlaybackSnapshot {
-        PlaybackSnapshot {
-            track: Some(PathBuf::from("track.wav")),
-            status,
-            position_ms: 0,
-            duration_ms,
-            error: None,
-        }
-    }
-
-    #[test]
-    fn unknown_duration_qualifies_on_natural_completion_but_not_after_a_seek_to_end() {
-        let attempt = PlaybackAttempt::new(PathBuf::from("track.wav"), 75, 0);
-        assert!(!attempt.should_qualify(&snapshot(PlaybackStatus::Playing, None)));
-        assert!(attempt.should_qualify(&snapshot(PlaybackStatus::Ended, None)));
-
-        let mut seeked_attempt = PlaybackAttempt::new(PathBuf::from("track.wav"), 75, 0);
-        seeked_attempt.seeked_to_end = true;
-        assert!(!seeked_attempt.should_qualify(&snapshot(PlaybackStatus::Ended, None)));
-    }
-
-    #[test]
-    fn overlapping_heard_segments_count_distinct_content_only_once() {
-        let mut attempt = PlaybackAttempt::new(PathBuf::from("track.wav"), 75, 0);
-        attempt.add_heard_segment(0, 2_000);
-        attempt.add_heard_segment(1_000, 3_000);
-        attempt.add_heard_segment(0, 1_500);
-
-        assert_eq!(attempt.heard_milliseconds(), 3_000);
-        assert!(!attempt.should_qualify(&snapshot(PlaybackStatus::Playing, Some(5_000))));
-        attempt.add_heard_segment(3_000, 3_750);
-        assert!(attempt.should_qualify(&snapshot(PlaybackStatus::Playing, Some(5_000))));
-    }
 }

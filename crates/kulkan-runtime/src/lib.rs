@@ -24,6 +24,7 @@ use kulkan_library::{
 use serde::{Deserialize, Serialize};
 
 mod playback;
+mod playback_attempt;
 mod queue;
 
 const MAX_CATALOG_PAGE_SIZE: usize = 32;
