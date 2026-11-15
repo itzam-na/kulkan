@@ -1,2 +1,6 @@
 /target/
 /vendor/
+/.makepkg-build/
+/*.pkg.tar.*
+/__pycache__/
+*.py[cod]

@@ -16,6 +16,15 @@ _commit=3052ce15361068696a682c2ac7ec639b0cece54f
 source=("git+https://github.com/itzam-na/kulkan.git#commit=${_commit}")
 sha256sums=('SKIP')
 
+# Keep makepkg's work and source caches out of the application's own src/ tree.
+if [[ "${BUILDDIR:-$startdir}" == "$startdir" ]]; then
+  BUILDDIR="$startdir/.makepkg-build"
+fi
+if [[ "${SRCDEST:-$startdir}" == "$startdir" ]]; then
+  SRCDEST="$BUILDDIR/sources"
+fi
+mkdir -p "$BUILDDIR" "$SRCDEST"
+
 prepare() {
   cd "$srcdir/$pkgname"
   export CARGO_HOME="$srcdir/cargo-home"

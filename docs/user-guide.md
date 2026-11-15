@@ -15,6 +15,7 @@ sudo pacman -U ./kulkan-0.1.1-1-x86_64.pkg.tar.zst
 ```
 
 Run `makepkg` as your regular user, not with `sudo`. The package is built locally from source; it is not a prebuilt release or an AUR package.
+The `PKGBUILD` keeps its work tree and source cache in `.makepkg-build/`, separate from the source checkout.
 
 On other Linux distributions, build with Cargo and run the player:
 

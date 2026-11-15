@@ -30,6 +30,7 @@ sudo pacman -U ./kulkan-0.1.1-1-x86_64.pkg.tar.zst
 ```
 
 Run `makepkg` as your regular user, not with `sudo`. The recipe installs build/runtime dependencies as needed; the resulting package is built locally from source and is not published as a binary release or AUR package.
+The PKGBUILD keeps makepkg's work tree and source cache under the ignored `.makepkg-build/` directory, so `--cleanbuild` does not touch the checkout's Rust `src/` files.
 
 ## Build from source
 
