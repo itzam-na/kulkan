@@ -20,6 +20,12 @@ For a normal Rust development environment with GTK 4 development files installed
 cargo fmt --all -- --check
 cargo test --workspace --locked
 cargo clippy --workspace --all-targets --locked -- -D warnings
+
+A tracked pre-commit hook is available in `.githooks/pre-commit`. Enable it with:
+
+```sh
+git config core.hooksPath .githooks
+```
 cargo build --workspace --release --locked
 ```
 
