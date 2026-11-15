@@ -3487,6 +3487,7 @@ fn begin_browse(
     sender: Sender<UiEvent>,
 ) {
     browse.navigation_touched.set(true);
+    browse.search_workspace.borrow_mut().cancel_pending_search();
     browse.search_workspace.borrow_mut().invalidate_pending();
     browse.track_selection.borrow_mut().reset();
     *browse.selection.borrow_mut() = selection.clone();

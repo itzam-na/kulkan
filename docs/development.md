@@ -10,7 +10,7 @@
 - `GLOSSARY.md`: domain language. Read it before changing tests or user-facing terminology.
 - `docs/adr/`: architectural decision records, when present.
 
-The server restores and persists configured Library folders, the scanned catalog/history/preferences, and Queue order/settings in app-owned state, and performs scans. The GTK client asks it to add/remove folders, trigger scans, read summaries, search, and page through catalog entries. Adding a folder is not a scan. GTK uses a background worker for IPC and scanning so a long scan does not block the UI thread.
+The server restores and persists configured Library folders, the scanned catalog/history/preferences, the startup browse view, and Queue order/settings in app-owned state, and performs scans. The GTK client asks it to add/remove folders, trigger scans, read summaries, browse Artists/Albums/Songs, search, and page through catalog entries. Adding a folder is not a scan. GTK uses a background worker for IPC and scanning so a long scan does not block the UI thread.
 
 ## Build and test
 
