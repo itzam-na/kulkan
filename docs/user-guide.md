@@ -34,7 +34,7 @@ Select one or more folders and choose **Scan selected**, or choose **Scan all** 
 
 Kulkán remembers configured folders and the last scanned catalog locally. Removing a folder does not erase its catalog entries or play history; after a scan confirms those entries are no longer covered, they become inactive. If a removable drive is disconnected or access is revoked, the scan reports an incomplete area and preserves last-known entries there.
 
-Settings also contains the played threshold, play-history controls, state export/import, reset, and **View on startup**. Choose Artists, Albums, or Songs; the initial default is Songs, and a changed choice takes effect on the next launch.
+Settings also contains the played threshold, play-history controls, state export/import, reset, **View on startup**, and **Appearance and CSS**. Choose Artists, Albums, or Songs; the initial default is Songs, and a changed choice takes effect on the next launch. Appearance offers Default, Catppuccin, Darcula, and Winamp presets plus an editable GTK CSS buffer. Choose a preset or edit the CSS and select **Apply**; **Reset** restores Default. Applied CSS is saved with app state and included in export/import and app-state reset.
 
 ## Browse the catalog
 

@@ -20,8 +20,8 @@ use kulkan_library::{
     NumericFilter, ScanSummary, SearchCriteria, TextFilter, present_catalog_entry,
 };
 use kulkan_runtime::{
-    ClientInstance, PlayCountUpdate, PlaybackSnapshot, PlaybackStatus, QueueEntry, QueueSnapshot,
-    RepeatMode, ServerClient, ServerProcess, activate_existing_client,
+    ClientInstance, MAX_CUSTOM_CSS_BYTES, PlayCountUpdate, PlaybackSnapshot, PlaybackStatus,
+    QueueEntry, QueueSnapshot, RepeatMode, ServerClient, ServerProcess, activate_existing_client,
 };
 use library_workspace::{
     LibraryWorkspace, SearchPanel, WorkspaceDestination, WorkspaceEffect, WorkspaceEvent,
@@ -120,6 +120,87 @@ button.transport-button.transport-primary:hover {
 }
 "#;
 
+const CATPPUCCIN_CSS: &str = r#"
+window { background-color: #1e1e2e; color: #cdd6f4; }
+.library-sidebar, .queue-sidebar { background-color: #181825; color: #cdd6f4; }
+.workspace-panel { background-color: #1e1e2e; }
+button, entry, textview { background-color: #313244; color: #cdd6f4; }
+button:hover { background-color: #45475a; }
+row:selected, button:checked { background-color: #cba6f7; color: #1e1e2e; }
+"#;
+
+const DARCULA_CSS: &str = r#"
+window { background-color: #2b2b2b; color: #a9b7c6; }
+.library-sidebar, .queue-sidebar { background-color: #212121; color: #a9b7c6; }
+.workspace-panel { background-color: #2b2b2b; }
+button, entry, textview { background-color: #3c3f41; color: #a9b7c6; }
+button:hover { background-color: #4e5254; }
+row:selected, button:checked { background-color: #589df6; color: #202020; }
+"#;
+
+const WINAMP_CSS: &str = r#"
+window { background-color: #101010; color: #00ff00; }
+.library-sidebar, .queue-sidebar { background-color: #050505; color: #00ff00; }
+.workspace-panel { background-color: #101010; }
+button, entry, textview { background-color: #202020; color: #00ff00; }
+button:hover { background-color: #303030; }
+row:selected, button:checked { background-color: #00aa00; color: #000000; }
+"#;
+
+fn theme_css(index: u32) -> String {
+    let theme = match index {
+        2 => CATPPUCCIN_CSS,
+        3 => DARCULA_CSS,
+        4 => WINAMP_CSS,
+        _ => "",
+    };
+    if theme.is_empty() {
+        APPLICATION_CSS.to_owned()
+    } else {
+        format!("{APPLICATION_CSS}\n{theme}")
+    }
+}
+
+fn theme_index(css: &str) -> u32 {
+    (1..=4).find(|index| theme_css(*index) == css).unwrap_or(0)
+}
+
+fn validate_custom_css(css: &str) -> Result<(), String> {
+    if css.len() > MAX_CUSTOM_CSS_BYTES {
+        return Err(format!(
+            "Custom CSS must be at most {MAX_CUSTOM_CSS_BYTES} bytes."
+        ));
+    }
+    let provider = gtk::CssProvider::new();
+    let errors = Rc::new(RefCell::new(Vec::new()));
+    let errors_on_parse = Rc::clone(&errors);
+    provider.connect_parsing_error(move |_, _, error| {
+        errors_on_parse.borrow_mut().push(error.to_string());
+    });
+    provider.load_from_data(css);
+    let errors = errors.borrow();
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(format!("CSS could not be applied: {}", errors.join("; ")))
+    }
+}
+
+fn load_css_into_editor(
+    provider: &gtk::CssProvider,
+    editor: &gtk::TextView,
+    themes: &gtk::DropDown,
+    syncing: &Cell<bool>,
+    saved_css: Option<String>,
+) {
+    let css = saved_css.unwrap_or_else(|| APPLICATION_CSS.to_owned());
+    provider.load_from_data(&css);
+    editor.buffer().set_text(&css);
+    syncing.set(true);
+    themes.set_selected(theme_index(&css));
+    syncing.set(false);
+}
+
 fn main() -> glib::ExitCode {
     match run() {
         Ok(exit_code) => exit_code,
@@ -196,17 +277,18 @@ fn run() -> Result<glib::ExitCode, Box<dyn std::error::Error>> {
     Ok(application.run())
 }
 
-fn install_application_styles() {
-    let Some(display) = gtk::gdk::Display::default() else {
-        return;
-    };
+fn install_application_styles() -> gtk::CssProvider {
     let provider = gtk::CssProvider::new();
     provider.load_from_data(APPLICATION_CSS);
+    let Some(display) = gtk::gdk::Display::default() else {
+        return provider;
+    };
     gtk::style_context_add_provider_for_display(
         &display,
         &provider,
         gtk::STYLE_PROVIDER_PRIORITY_APPLICATION,
     );
+    provider
 }
 
 fn library_navigation_button(label: &str) -> gtk::Button {
@@ -285,7 +367,7 @@ impl ServerState {
 }
 
 fn build_main_window(application: &gtk::Application, server_state: Rc<RefCell<ServerState>>) {
-    install_application_styles();
+    let css_provider = install_application_styles();
     let window = gtk::ApplicationWindow::builder()
         .application(application)
         .title("Kulkán")
@@ -410,7 +492,52 @@ fn build_main_window(application: &gtk::Application, server_state: Rc<RefCell<Se
     settings_content.append(&export_state);
     settings_content.append(&import_state);
     settings_content.append(&reset_state);
-    settings_window.set_child(Some(&settings_content));
+
+    let appearance_heading = gtk::Label::new(Some("Appearance and CSS"));
+    appearance_heading.set_halign(gtk::Align::Start);
+    appearance_heading.add_css_class("heading");
+    settings_content.append(&appearance_heading);
+    let theme_label = gtk::Label::new(Some("Theme preset"));
+    theme_label.set_halign(gtk::Align::Start);
+    settings_content.append(&theme_label);
+    let css_themes =
+        gtk::DropDown::from_strings(&["Custom CSS", "Default", "Catppuccin", "Darcula", "Winamp"]);
+    css_themes.set_selected(1);
+    css_themes.update_property(&[gtk::accessible::Property::Label("CSS theme preset")]);
+    settings_content.append(&css_themes);
+    let css_editor = gtk::TextView::new();
+    css_editor.set_monospace(true);
+    css_editor.set_wrap_mode(gtk::WrapMode::None);
+    css_editor.set_top_margin(8);
+    css_editor.set_bottom_margin(8);
+    css_editor.set_left_margin(8);
+    css_editor.set_right_margin(8);
+    css_editor.buffer().set_text(APPLICATION_CSS);
+    css_editor.update_property(&[gtk::accessible::Property::Label("Application CSS editor")]);
+    let css_editor_scroll = gtk::ScrolledWindow::builder()
+        .child(&css_editor)
+        .min_content_height(180)
+        .min_content_width(420)
+        .build();
+    settings_content.append(&css_editor_scroll);
+    let css_actions = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    let css_apply = gtk::Button::with_label("Apply");
+    let css_reset = gtk::Button::with_label("Reset");
+    css_apply.set_sensitive(false);
+    css_reset.set_sensitive(false);
+    css_actions.append(&css_apply);
+    css_actions.append(&css_reset);
+    settings_content.append(&css_actions);
+    let css_status = gtk::Label::new(Some("Choose a preset or edit GTK CSS, then Apply."));
+    css_status.set_wrap(true);
+    css_status.set_selectable(true);
+    css_status.set_halign(gtk::Align::Start);
+    settings_content.append(&css_status);
+
+    let settings_scroll = gtk::ScrolledWindow::builder()
+        .child(&settings_content)
+        .build();
+    settings_window.set_child(Some(&settings_scroll));
 
     let main_content = gtk::Box::new(gtk::Orientation::Vertical, 8);
     main_content.add_css_class("workspace-panel");
@@ -805,6 +932,7 @@ fn build_main_window(application: &gtk::Application, server_state: Rc<RefCell<Se
         play_count: play_count_filter.clone(),
     };
     let syncing_threshold = Rc::new(Cell::new(false));
+    let css_syncing = Rc::new(Cell::new(false));
     let scan_ui = ScanUi {
         status: status.clone(),
         settings_status: settings_status.clone(),
@@ -889,6 +1017,13 @@ fn build_main_window(application: &gtk::Application, server_state: Rc<RefCell<Se
             saved_startup_view: Rc::clone(&saved_startup_view),
             played_threshold: played_threshold.clone(),
             syncing_threshold: Rc::clone(&syncing_threshold),
+            css_provider: css_provider.clone(),
+            css_editor: css_editor.clone(),
+            css_themes: css_themes.clone(),
+            css_syncing: Rc::clone(&css_syncing),
+            css_apply: css_apply.clone(),
+            css_reset: css_reset.clone(),
+            css_status: css_status.clone(),
             clear_all_history: clear_all_history.clone(),
             recovery_attempted: Rc::clone(&recovery_attempted),
             queue: queue_ui.clone(),
@@ -943,6 +1078,75 @@ fn build_main_window(application: &gtk::Application, server_state: Rc<RefCell<Se
                 .map(|state| state.startup_view)
                 .map_err(|error| error.to_string());
             let _ = sender.send(UiEvent::StartupView(result));
+        });
+    });
+
+    let css_editor_for_theme = css_editor.clone();
+    let css_status_for_theme = css_status.clone();
+    let css_syncing_for_theme = Rc::clone(&css_syncing);
+    css_themes.connect_selected_notify(move |themes| {
+        if css_syncing_for_theme.get() || themes.selected() == 0 {
+            return;
+        }
+        css_editor_for_theme
+            .buffer()
+            .set_text(&theme_css(themes.selected()));
+        css_status_for_theme.set_text("Preset loaded in the editor. Choose Apply to use it.");
+    });
+
+    let css_apply_editor = css_editor.clone();
+    let css_apply_server = Rc::clone(&server_state);
+    let css_apply_sender = sender.clone();
+    let css_apply_status = css_status.clone();
+    let css_apply_button = css_apply.clone();
+    let css_reset_button = css_reset.clone();
+    let css_theme_for_apply = css_themes.clone();
+    css_apply.connect_clicked(move |_| {
+        let buffer = css_apply_editor.buffer();
+        let css = buffer
+            .text(&buffer.start_iter(), &buffer.end_iter(), true)
+            .to_string();
+        if let Err(error) = validate_custom_css(&css) {
+            css_apply_status.set_text(&error);
+            return;
+        }
+        let Some(client) = css_apply_server.borrow().client() else {
+            css_apply_status.set_text("Server unavailable. Select Retry before saving CSS.");
+            return;
+        };
+        css_apply_button.set_sensitive(false);
+        css_reset_button.set_sensitive(false);
+        css_apply_editor.set_editable(false);
+        css_theme_for_apply.set_sensitive(false);
+        css_apply_status.set_text("Applying and saving CSS…");
+        let sender = css_apply_sender.clone();
+        thread::spawn(move || {
+            let result = client.set_custom_css(Some(css));
+            let _ = sender.send(UiEvent::CssSaved(result.map_err(|error| error.to_string())));
+        });
+    });
+
+    let css_reset_server = Rc::clone(&server_state);
+    let css_reset_sender = sender.clone();
+    let css_reset_status = css_status.clone();
+    let css_reset_apply_button = css_apply.clone();
+    let css_reset_button = css_reset.clone();
+    let css_reset_editor = css_editor.clone();
+    let css_theme_for_reset = css_themes.clone();
+    css_reset.connect_clicked(move |_| {
+        let Some(client) = css_reset_server.borrow().client() else {
+            css_reset_status.set_text("Server unavailable. Select Retry before resetting CSS.");
+            return;
+        };
+        css_reset_apply_button.set_sensitive(false);
+        css_reset_button.set_sensitive(false);
+        css_reset_editor.set_editable(false);
+        css_theme_for_reset.set_sensitive(false);
+        css_reset_status.set_text("Resetting CSS to Default…");
+        let sender = css_reset_sender.clone();
+        thread::spawn(move || {
+            let result = client.set_custom_css(None);
+            let _ = sender.send(UiEvent::CssSaved(result.map_err(|error| error.to_string())));
         });
     });
 
@@ -1709,6 +1913,8 @@ fn build_main_window(application: &gtk::Application, server_state: Rc<RefCell<Se
     let retry_export = export_state.clone();
     let retry_import = import_state.clone();
     let retry_reset = reset_state.clone();
+    let retry_css_apply = css_apply.clone();
+    let retry_css_reset = css_reset.clone();
     let retry_recovery_attempted = Rc::clone(&recovery_attempted);
     retry.connect_clicked(move |_| {
         let retry_result = { retry_state.borrow_mut().start() };
@@ -1756,6 +1962,8 @@ fn build_main_window(application: &gtk::Application, server_state: Rc<RefCell<Se
                 retry_reset.set_sensitive(false);
                 retry_threshold.set_sensitive(false);
                 retry_startup_view.set_sensitive(false);
+                retry_css_apply.set_sensitive(false);
+                retry_css_reset.set_sensitive(false);
                 set_server_controls_sensitive(
                     &retry_add,
                     &retry_remove,
@@ -1856,13 +2064,14 @@ fn build_main_window(application: &gtk::Application, server_state: Rc<RefCell<Se
 enum UiEvent {
     Workspace(WorkspaceEvent),
     Roots(Result<LibraryState, String>),
-    RestoredLibrary(Result<(LibraryState, u8, ServerClient), String>),
+    RestoredLibrary(Result<(LibraryState, u8, Option<String>, ServerClient), String>),
     StartupView(Result<BrowseView, String>),
     HistoryCleared(Result<(LibraryState, u8, ServerClient), String>),
     Threshold(Result<u8, String>),
     StateExported(Result<PathBuf, String>),
-    StateImported(Result<(LibraryState, CatalogPage, u8, QueueSnapshot), String>),
-    StateReset(Result<(LibraryState, CatalogPage, u8, QueueSnapshot), String>),
+    StateImported(Result<(LibraryState, CatalogPage, u8, QueueSnapshot, Option<String>), String>),
+    StateReset(Result<(LibraryState, CatalogPage, u8, QueueSnapshot, Option<String>), String>),
+    CssSaved(Result<Option<String>, String>),
     Recovery(Result<ServerProcess, String>),
     Catalog(Result<(ScanSummary, ServerClient), String>),
     Playback {
@@ -1917,6 +2126,13 @@ struct LibraryUi {
     saved_startup_view: Rc<Cell<BrowseView>>,
     played_threshold: gtk::SpinButton,
     syncing_threshold: Rc<Cell<bool>>,
+    css_provider: gtk::CssProvider,
+    css_editor: gtk::TextView,
+    css_themes: gtk::DropDown,
+    css_syncing: Rc<Cell<bool>>,
+    css_apply: gtk::Button,
+    css_reset: gtk::Button,
+    css_status: gtk::Label,
     clear_all_history: gtk::Button,
     recovery_attempted: Rc<Cell<bool>>,
     queue: QueueUi,
@@ -2205,6 +2421,13 @@ fn install_library_events(receiver: Receiver<UiEvent>, ui: LibraryUi) {
         saved_startup_view,
         played_threshold,
         syncing_threshold,
+        css_provider,
+        css_editor,
+        css_themes,
+        css_syncing,
+        css_apply,
+        css_reset,
+        css_status,
         clear_all_history,
         recovery_attempted,
         queue,
@@ -2217,7 +2440,7 @@ fn install_library_events(receiver: Receiver<UiEvent>, ui: LibraryUi) {
                 UiEvent::Workspace(event) => {
                     dispatch_library_workspace_event(&browse, event);
                 }
-                UiEvent::RestoredLibrary(Ok((state, threshold, _client))) => {
+                UiEvent::RestoredLibrary(Ok((state, threshold, css, _client))) => {
                     *roots_model.borrow_mut() = state.selected_roots.clone();
                     replace_root_rows(&roots_list, &state.selected_roots);
                     set_server_controls_sensitive(
@@ -2236,6 +2459,18 @@ fn install_library_events(receiver: Receiver<UiEvent>, ui: LibraryUi) {
                         state.startup_view,
                     );
                     startup_view.set_sensitive(true);
+                    css_editor.set_editable(true);
+                    css_themes.set_sensitive(true);
+                    css_apply.set_sensitive(true);
+                    css_reset.set_sensitive(true);
+                    load_css_into_editor(
+                        &css_provider,
+                        &css_editor,
+                        &css_themes,
+                        &css_syncing,
+                        css,
+                    );
+                    css_status.set_text("Saved application CSS loaded.");
                     clear_all_history.set_sensitive(state.catalog_entries > 0);
                     syncing_threshold.set(true);
                     played_threshold.set_value(f64::from(threshold));
@@ -2252,6 +2487,9 @@ fn install_library_events(receiver: Receiver<UiEvent>, ui: LibraryUi) {
                 UiEvent::RestoredLibrary(Err(error)) => {
                     status.set_text(&format!("Could not restore library: {error}"));
                     settings_status.set_text(&format!("Could not restore library: {error}"));
+                    css_status.set_text(&format!("Could not load saved CSS: {error}"));
+                    css_apply.set_sensitive(false);
+                    css_reset.set_sensitive(false);
                 }
                 UiEvent::StartupView(Ok(view)) => {
                     saved_startup_view.set(view);
@@ -2293,7 +2531,7 @@ fn install_library_events(receiver: Receiver<UiEvent>, ui: LibraryUi) {
                 UiEvent::StateExported(Err(error)) => {
                     status.set_text(&format!("Could not export state: {error}"));
                 }
-                UiEvent::StateImported(Ok((state, page, threshold, snapshot))) => {
+                UiEvent::StateImported(Ok((state, page, threshold, snapshot, css))) => {
                     clear_search.emit_clicked();
                     restore_startup_view_control(
                         &startup_view,
@@ -2301,6 +2539,14 @@ fn install_library_events(receiver: Receiver<UiEvent>, ui: LibraryUi) {
                         &saved_startup_view,
                         state.startup_view,
                     );
+                    load_css_into_editor(
+                        &css_provider,
+                        &css_editor,
+                        &css_themes,
+                        &css_syncing,
+                        css,
+                    );
+                    css_status.set_text("Imported application CSS loaded.");
                     *roots_model.borrow_mut() = state.selected_roots.clone();
                     replace_root_rows(&roots_list, &state.selected_roots);
                     remember_catalog_entries(&catalog_details, &page.entries);
@@ -2338,7 +2584,7 @@ fn install_library_events(receiver: Receiver<UiEvent>, ui: LibraryUi) {
                 UiEvent::StateImported(Err(error)) => {
                     status.set_text(&format!("Could not import state: {error}"));
                 }
-                UiEvent::StateReset(Ok((state, page, threshold, snapshot))) => {
+                UiEvent::StateReset(Ok((state, page, threshold, snapshot, css))) => {
                     clear_search.emit_clicked();
                     restore_startup_view_control(
                         &startup_view,
@@ -2346,6 +2592,14 @@ fn install_library_events(receiver: Receiver<UiEvent>, ui: LibraryUi) {
                         &saved_startup_view,
                         state.startup_view,
                     );
+                    load_css_into_editor(
+                        &css_provider,
+                        &css_editor,
+                        &css_themes,
+                        &css_syncing,
+                        css,
+                    );
+                    css_status.set_text("Application CSS reset to Default.");
                     *roots_model.borrow_mut() = state.selected_roots.clone();
                     replace_root_rows(&roots_list, &state.selected_roots);
                     remember_catalog_entries(&catalog_details, &page.entries);
@@ -2364,6 +2618,27 @@ fn install_library_events(receiver: Receiver<UiEvent>, ui: LibraryUi) {
                 }
                 UiEvent::StateReset(Err(error)) => {
                     status.set_text(&format!("Could not reset app state: {error}"));
+                }
+                UiEvent::CssSaved(Ok(css)) => {
+                    load_css_into_editor(
+                        &css_provider,
+                        &css_editor,
+                        &css_themes,
+                        &css_syncing,
+                        css,
+                    );
+                    css_status.set_text("Application CSS applied and saved.");
+                    css_editor.set_editable(true);
+                    css_themes.set_sensitive(true);
+                    css_apply.set_sensitive(actions.server_state.borrow().client().is_some());
+                    css_reset.set_sensitive(actions.server_state.borrow().client().is_some());
+                }
+                UiEvent::CssSaved(Err(error)) => {
+                    css_status.set_text(&format!("Could not save application CSS: {error}"));
+                    css_editor.set_editable(true);
+                    css_themes.set_sensitive(true);
+                    css_apply.set_sensitive(actions.server_state.borrow().client().is_some());
+                    css_reset.set_sensitive(actions.server_state.borrow().client().is_some());
                 }
                 UiEvent::Recovery(Ok(process)) => {
                     let client = process.client();
@@ -2408,6 +2683,8 @@ fn install_library_events(receiver: Receiver<UiEvent>, ui: LibraryUi) {
                         "Automatic server recovery failed: {error}. Select Retry or Quit."
                     ));
                     startup_view.set_sensitive(false);
+                    css_apply.set_sensitive(false);
+                    css_reset.set_sensitive(false);
                     retry.set_sensitive(true);
                 }
                 UiEvent::Roots(Ok(state)) => {
@@ -2519,6 +2796,8 @@ fn install_library_events(receiver: Receiver<UiEvent>, ui: LibraryUi) {
                             import_state.set_sensitive(false);
                             reset_state.set_sensitive(false);
                             played_threshold.set_sensitive(false);
+                            css_apply.set_sensitive(false);
+                            css_reset.set_sensitive(false);
                             clear_all_history.set_sensitive(false);
                             queue.set_available(false);
                             if !recovery_attempted.replace(true) {
@@ -3627,7 +3906,8 @@ fn send_import_state(client: ServerClient, path: PathBuf, sender: Sender<UiEvent
             .and_then(|_| {
                 let (state, page, threshold, client, _) = read_library_view(&client, None)?;
                 let queue = client.queue_state().map_err(|error| error.to_string())?;
-                Ok((state, page, threshold, queue))
+                let css = client.custom_css().map_err(|error| error.to_string())?;
+                Ok((state, page, threshold, queue, css))
             });
         let _ = sender.send(UiEvent::StateImported(result));
     });
@@ -3641,7 +3921,8 @@ fn send_reset_app_state(client: ServerClient, sender: Sender<UiEvent>) {
             .and_then(|_| {
                 let (state, page, threshold, client, _) = read_library_view(&client, None)?;
                 let queue = client.queue_state().map_err(|error| error.to_string())?;
-                Ok((state, page, threshold, queue))
+                let css = client.custom_css().map_err(|error| error.to_string())?;
+                Ok((state, page, threshold, queue, css))
             });
         let _ = sender.send(UiEvent::StateReset(result));
     });
@@ -3713,12 +3994,13 @@ fn read_scanned_catalog(
 
 fn read_restored_library(
     client: &ServerClient,
-) -> Result<(LibraryState, u8, ServerClient), String> {
+) -> Result<(LibraryState, u8, Option<String>, ServerClient), String> {
     let state = client.library_state().map_err(|error| error.to_string())?;
     let threshold = client
         .played_threshold()
         .map_err(|error| error.to_string())?;
-    Ok((state, threshold, client.clone()))
+    let css = client.custom_css().map_err(|error| error.to_string())?;
+    Ok((state, threshold, css, client.clone()))
 }
 
 fn read_library_view(
@@ -3843,4 +4125,25 @@ fn set_server_controls_sensitive(
     scan_selected.set_sensitive(sensitive && has_selected_roots);
     scan_all.set_sensitive(sensitive && can_scan_all);
     remove_root.set_sensitive(sensitive && has_selected_roots);
+}
+
+#[cfg(test)]
+mod appearance_tests {
+    use super::{APPLICATION_CSS, theme_css, theme_index};
+
+    #[test]
+    fn built_in_theme_css_round_trips_to_its_preset() {
+        for theme in 1..=4 {
+            assert_eq!(theme_index(&theme_css(theme)), theme);
+        }
+    }
+
+    #[test]
+    fn each_color_preset_keeps_the_application_layout_rules() {
+        for (theme, accent) in [(2, "#cba6f7"), (3, "#589df6"), (4, "#00ff00")] {
+            let css = theme_css(theme);
+            assert!(css.starts_with(APPLICATION_CSS));
+            assert!(css.contains(accent));
+        }
+    }
 }

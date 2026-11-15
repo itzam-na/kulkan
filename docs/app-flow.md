@@ -237,7 +237,7 @@ This matches [ADR-0001: isolate Playback attempt qualification](adr/0001-playbac
 
 | State | Owner / on-disk location | Restore behavior |
 |---|---|---|
-| Configured Library folders, catalog cache, metadata, content fingerprint, play counts, threshold, startup Browse view | `LibraryService`, `$XDG_DATA_HOME/org.kulkan.Kulkan/library.json` (or `$HOME/.local/share/...`) | Restored without an implicit scan. Cache is rebuildable through an explicit scan. |
+| Configured Library folders, catalog cache, metadata, content fingerprint, play counts, threshold, startup Browse view, applied CSS | `LibraryService`, `$XDG_DATA_HOME/org.kulkan.Kulkan/library.json` (or `$HOME/.local/share/...`) | Restored without an implicit scan. Cache is rebuildable through an explicit scan; CSS also travels with exported app state. |
 | Queue entries/order, current occurrence, repeat, shuffle | `QueueService`, sibling `queue.json` | Current Track starts from the beginning, paused on normal startup/manual Retry. |
 | In-flight Playback attempt coverage | In-memory `QueueService` / `PlaybackAttempt` | Not persisted; recovery starts a new attempt. |
 | Client/server sockets | `$XDG_RUNTIME_DIR/org.kulkan.Kulkan/{client,server}.sock` | Runtime-only; private directory/socket permissions and peer checks apply. |

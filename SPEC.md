@@ -132,7 +132,7 @@ A Playback attempt is one playback of one Track, paused/resumed as needed. It en
 - The startup browse view is a persistent setting with Artists, Albums, and Songs choices. Songs is the initial default; changing the setting affects the next launch.
 - Selecting Search in the left navigation replaces the center browse view with the search criteria view. Provide Basic search with inline criteria chips and Advanced search with a rule composer. Submitting criteria replaces that view with paged matching results; do not load all results at once. Search state (criteria and results) is retained while navigating to other views. Selecting Search again from the results view returns to the criteria view with the current values intact. Clear empties criteria and results and leaves a blank search criteria view.
 - Order search rows by artist, release, track number, then title. Search ignores diacritics while results preserve original metadata. Keep the queue rail visible throughout search.
-- Settings lists configured Library folders and supports adding and removing folders, Scan selected, and Scan all. Include the existing played-threshold, play-history, state export/import, and reset controls in the dialog, along with the startup browse-view setting. Show scanning status and a completion summary/errors. Scanning is not cancellable; closing the dialog does not stop an active scan.
+- Settings lists configured Library folders and supports adding and removing folders, Scan selected, and Scan all. Include the existing played-threshold, play-history, state export/import, and reset controls in the dialog, along with the startup browse-view setting. Provide an editable GTK CSS field with Apply and Reset actions and Default, Catppuccin, Darcula, and Winamp presets. Apply validates and saves the stylesheet; Reset restores the built-in Default stylesheet. Show scanning status and a completion summary/errors. Scanning is not cancellable; closing the dialog does not stop an active scan.
 - Boolean true criteria display as their label alone (for example, “Not-yet-played”); false prefixes “not.” Constrain long labels to the chip/card with ellipsis and make the full label available as a tooltip.
 - Playlist navigation and playlist management are deferred; no Playlists item appears in the v1 navigation.
 - The approved throwaway UI prototypes are discussion artifacts only; do not merge them as production UI.
@@ -149,7 +149,7 @@ A Playback attempt is one playback of one Track, paused/resumed as needed. It en
 
 ### Persistence and transfer
 
-Persist selected Library folders, the rebuildable metadata/catalog cache, user preferences (including played threshold and startup browse view), per-entry play counts including inactive entries, and the current queue/order plus shuffle/repeat settings.
+Persist selected Library folders, the rebuildable metadata/catalog cache, user preferences (including played threshold, startup browse view, and applied CSS), per-entry play counts including inactive entries, and the current queue/order plus shuffle/repeat settings. Include applied CSS in app-state export/import; app-state reset restores the built-in Default CSS.
 
 - Derive the cache from read-only media files; rebuild it through explicit rescan.
 - On normal client launch or manual Retry, restore the current queued Track from the beginning in a paused state; do not restore a partial playback position.

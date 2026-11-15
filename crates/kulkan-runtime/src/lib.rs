@@ -32,6 +32,7 @@ const MAX_CATALOG_PAGE_SIZE: usize = 32;
 const LIBRARY_REQUEST_TIMEOUT: Duration = Duration::from_secs(300);
 const LIBRARY_STATE_VERSION: u16 = 3;
 const DEFAULT_PLAYED_THRESHOLD_PERCENT: u8 = 75;
+pub const MAX_CUSTOM_CSS_BYTES: usize = 8 * 1024;
 static NEXT_LIBRARY_STATE_TEMP_FILE: AtomicU64 = AtomicU64::new(0);
 
 /// Runs the local server protocol until the client asks it to shut down.
@@ -141,6 +142,7 @@ struct LibraryService {
     catalog: Catalog,
     played_threshold_percent: u8,
     startup_view: BrowseView,
+    custom_css: Option<String>,
     state_path: Option<PathBuf>,
 }
 
@@ -153,6 +155,8 @@ struct PersistedLibraryState {
     played_threshold_percent: u8,
     #[serde(default)]
     startup_view: BrowseView,
+    #[serde(default)]
+    custom_css: Option<String>,
 }
 
 fn default_played_threshold_percent() -> u8 {
@@ -167,6 +171,7 @@ impl LibraryService {
                 catalog: Catalog::default(),
                 played_threshold_percent: DEFAULT_PLAYED_THRESHOLD_PERCENT,
                 startup_view: BrowseView::default(),
+                custom_css: None,
                 state_path: None,
             });
         };
@@ -192,11 +197,18 @@ impl LibraryService {
                         ),
                     ));
                 }
+                if custom_css_exceeds_limit(state.custom_css.as_deref()) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidData,
+                        "saved custom CSS exceeds the supported size limit",
+                    ));
+                }
                 Ok(Self {
                     selected_roots: state.selected_roots,
                     catalog: state.catalog,
                     played_threshold_percent: state.played_threshold_percent,
                     startup_view: state.startup_view,
+                    custom_css: state.custom_css,
                     state_path: Some(state_path.to_path_buf()),
                 })
             }
@@ -205,6 +217,7 @@ impl LibraryService {
                 catalog: Catalog::default(),
                 played_threshold_percent: DEFAULT_PLAYED_THRESHOLD_PERCENT,
                 startup_view: BrowseView::default(),
+                custom_css: None,
                 state_path: Some(state_path.to_path_buf()),
             }),
             Err(error) => Err(error),
@@ -227,6 +240,7 @@ impl LibraryService {
             catalog: self.catalog.clone(),
             played_threshold_percent: self.played_threshold_percent,
             startup_view: self.startup_view,
+            custom_css: self.custom_css.clone(),
         })
         .map_err(|error| io::Error::other(format!("could not encode library state: {error}")))?;
         let temp_path = library_state_temp_path(state_path);
@@ -254,6 +268,7 @@ impl LibraryService {
             catalog: self.catalog.clone(),
             played_threshold_percent: self.played_threshold_percent,
             startup_view: self.startup_view,
+            custom_css: self.custom_css.clone(),
         }
     }
 
@@ -270,17 +285,25 @@ impl LibraryService {
                 "played threshold in imported state must be from 1 through 100",
             ));
         }
+        if custom_css_exceeds_limit(state.custom_css.as_deref()) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "custom CSS must be at most 8192 bytes",
+            ));
+        }
         let old_state = self.persisted_state();
         state.version = LIBRARY_STATE_VERSION;
         self.selected_roots = state.selected_roots;
         self.catalog = state.catalog;
         self.played_threshold_percent = state.played_threshold_percent;
         self.startup_view = state.startup_view;
+        self.custom_css = state.custom_css;
         if let Err(error) = self.persist() {
             self.selected_roots = old_state.selected_roots;
             self.catalog = old_state.catalog;
             self.played_threshold_percent = old_state.played_threshold_percent;
             self.startup_view = old_state.startup_view;
+            self.custom_css = old_state.custom_css;
             return Err(error);
         }
         Ok(())
@@ -292,11 +315,13 @@ impl LibraryService {
         self.catalog = Catalog::default();
         self.played_threshold_percent = DEFAULT_PLAYED_THRESHOLD_PERCENT;
         self.startup_view = BrowseView::default();
+        self.custom_css = None;
         if let Err(error) = self.persist() {
             self.selected_roots = old_state.selected_roots;
             self.catalog = old_state.catalog;
             self.played_threshold_percent = old_state.played_threshold_percent;
             self.startup_view = old_state.startup_view;
+            self.custom_css = old_state.custom_css;
             return Err(error);
         }
         Ok(())
@@ -342,6 +367,21 @@ impl LibraryService {
                     return Message::LibraryOperationFailed(error.to_string());
                 }
                 self.state_message()
+            }
+            Message::GetCustomCss => Message::CustomCss(self.custom_css.clone()),
+            Message::SetCustomCss(css) => {
+                if custom_css_exceeds_limit(css.as_deref()) {
+                    return Message::LibraryOperationFailed(format!(
+                        "custom CSS must be at most {MAX_CUSTOM_CSS_BYTES} bytes"
+                    ));
+                }
+                let previous = self.custom_css.clone();
+                self.custom_css = css;
+                if let Err(error) = self.persist() {
+                    self.custom_css = previous;
+                    return Message::LibraryOperationFailed(error.to_string());
+                }
+                Message::CustomCss(self.custom_css.clone())
             }
             Message::GetPlayedThreshold => Message::PlayedThreshold(self.played_threshold_percent),
             Message::SetPlayedThreshold(percent) => {
@@ -523,6 +563,10 @@ impl LibraryService {
         }
         Ok(())
     }
+}
+
+fn custom_css_exceeds_limit(css: Option<&str>) -> bool {
+    css.is_some_and(|css| css.len() > MAX_CUSTOM_CSS_BYTES)
 }
 
 fn library_state_temp_path(state_path: &Path) -> PathBuf {
@@ -911,6 +955,14 @@ impl ServerProcess {
         self.client().set_startup_view(view)
     }
 
+    pub fn custom_css(&self) -> io::Result<Option<String>> {
+        self.client().custom_css()
+    }
+
+    pub fn set_custom_css(&self, css: Option<String>) -> io::Result<Option<String>> {
+        self.client().set_custom_css(css)
+    }
+
     pub fn search_catalog(
         &self,
         criteria: &SearchCriteria,
@@ -1043,6 +1095,20 @@ impl ServerClient {
 
     pub fn set_startup_view(&self, view: BrowseView) -> io::Result<LibraryState> {
         expect_library_state(self.request(Message::SetStartupView(view))?)
+    }
+
+    pub fn custom_css(&self) -> io::Result<Option<String>> {
+        match self.request(Message::GetCustomCss)? {
+            Message::CustomCss(css) => Ok(css),
+            response => unexpected_library_response(response),
+        }
+    }
+
+    pub fn set_custom_css(&self, css: Option<String>) -> io::Result<Option<String>> {
+        match self.request(Message::SetCustomCss(css))? {
+            Message::CustomCss(css) => Ok(css),
+            response => unexpected_library_response(response),
+        }
     }
 
     pub fn played_threshold(&self) -> io::Result<u8> {
