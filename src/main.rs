@@ -676,7 +676,6 @@ fn build_main_window(application: &gtk::Application, server_state: Rc<RefCell<Se
         sender: sender.clone(),
         status: status.clone(),
         active_search: Rc::clone(&active_search),
-        search_results_active: Rc::clone(&search_results_active),
         search_workspace: Rc::clone(&search_workspace),
     };
     let search_form = SearchForm {
@@ -952,8 +951,11 @@ fn build_main_window(application: &gtk::Application, server_state: Rc<RefCell<Se
             return;
         };
         search_browse.search_view_open.set(true);
-        search_browse.search_workspace.borrow_mut().edit_criteria();
-        let generation = search_browse.search_workspace.borrow_mut().begin_request();
+        let generation = search_browse
+            .search_workspace
+            .borrow_mut()
+            .begin_search(criteria.clone());
+        *search_browse.actions.active_search.borrow_mut() = Some(criteria.clone());
         search_browse.track_selection.borrow_mut().reset();
         search_browse.search_criteria_panel.set_visible(false);
         search_idle_panel.set_visible(false);
@@ -1101,24 +1103,11 @@ fn build_main_window(application: &gtk::Application, server_state: Rc<RefCell<Se
 
     let clear_all_state = Rc::clone(&server_state);
     let clear_all_sender = sender.clone();
-    let clear_all_search = Rc::clone(&active_search);
-    let clear_all_search_visible = Rc::clone(&search_results_active);
     let clear_all_workspace = Rc::clone(&search_workspace);
     clear_all_history.connect_clicked(move |_| {
         if let Some(client) = clear_all_state.borrow().client() {
-            let loaded_results =
-                cached_search_result_count(&clear_all_workspace, clear_all_search_visible.get());
             let generation = clear_all_workspace.borrow_mut().begin_request();
-            send_clear_all_history(
-                client,
-                clear_all_search_visible
-                    .get()
-                    .then(|| clear_all_search.borrow().clone())
-                    .flatten(),
-                loaded_results,
-                generation,
-                clear_all_sender.clone(),
-            );
+            send_clear_all_history(client, generation, clear_all_sender.clone());
         }
     });
 
@@ -1885,17 +1874,13 @@ enum UiEvent {
         generation: u64,
     },
     HistoryCleared {
-        result: Result<
-            (
-                LibraryState,
-                CatalogPage,
-                u8,
-                ServerClient,
-                Option<SearchCriteria>,
-            ),
-            String,
-        >,
+        result: Result<(LibraryState, u8, ServerClient), String>,
         generation: u64,
+    },
+    SearchRefreshed {
+        result: Result<(CatalogPage, ServerClient, SearchCriteria), String>,
+        query_revision: u64,
+        refresh_generation: u64,
     },
     Threshold(Result<u8, String>),
     StateExported(Result<PathBuf, String>),
@@ -2030,7 +2015,6 @@ struct CatalogActions {
     sender: Sender<UiEvent>,
     status: gtk::Label,
     active_search: Rc<RefCell<Option<SearchCriteria>>>,
-    search_results_active: Rc<Cell<bool>>,
     search_workspace: Rc<RefCell<SearchWorkspace>>,
 }
 
@@ -2357,74 +2341,119 @@ fn install_library_events(receiver: Receiver<UiEvent>, ui: LibraryUi) {
                         }
                     }
                 }
-                UiEvent::HistoryCleared { result, generation } => {
-                    if !browse
-                        .search_workspace
-                        .borrow()
-                        .is_current_request(generation)
-                    {
-                        continue;
-                    }
-                    match result {
-                        Ok((state, page, threshold, client, criteria)) => {
-                            *roots_model.borrow_mut() = state.selected_roots.clone();
-                            replace_root_rows(&roots_list, &state.selected_roots);
-                            clear_all_history.set_sensitive(state.catalog_entries > 0);
-                            syncing_threshold.set(true);
-                            played_threshold.set_value(f64::from(threshold));
-                            syncing_threshold.set(false);
-                            if browse.search_view_open.get()
-                                && browse.search_workspace.borrow().open() == SearchPanel::Criteria
-                            {
-                                status.set_text("Play history cleared.");
-                                continue;
+                UiEvent::HistoryCleared { result, generation } => match result {
+                    Ok((state, threshold, client)) => {
+                        *roots_model.borrow_mut() = state.selected_roots.clone();
+                        replace_root_rows(&roots_list, &state.selected_roots);
+                        clear_all_history.set_sensitive(state.catalog_entries > 0);
+                        syncing_threshold.set(true);
+                        played_threshold.set_value(f64::from(threshold));
+                        syncing_threshold.set(false);
+                        if browse.search_workspace.borrow().has_search() {
+                            let (criteria, query_revision, result_count) = {
+                                let workspace = browse.search_workspace.borrow();
+                                (
+                                    workspace.criteria().clone(),
+                                    workspace.query_revision(),
+                                    cached_search_result_count(&workspace),
+                                )
+                            };
+                            browse.search_workspace.borrow_mut().begin_request();
+                            let refresh_generation =
+                                browse.search_workspace.borrow_mut().begin_results_refresh();
+                            let search_is_visible = browse.search_view_open.get()
+                                && browse.search_workspace.borrow().open() == SearchPanel::Results;
+                            if search_is_visible {
+                                browse.track_load_more.set_sensitive(false);
+                                status.set_text("Refreshing Search after clearing history…");
                             }
-                            if browse.search_results_active.get() {
-                                let criteria = criteria.unwrap_or_default();
-                                browse.track_selection.borrow_mut().reset();
-                                browse
-                                    .search_workspace
-                                    .borrow_mut()
-                                    .submit(criteria.clone(), page.clone());
-                                browse.search_view_open.set(true);
-                                browse.search_results_active.set(true);
-                                browse.search_criteria_panel.set_visible(false);
-                                browse.panel.set_visible(false);
-                                browse.clear_search_results.set_visible(true);
-                                replace_search_chips(&search_chips, &criteria);
-                                *active_search.borrow_mut() = Some(criteria.clone());
-                                remember_catalog_entries(&catalog_details, &page.entries);
-                                replace_catalog_rows(
-                                    &catalog_list,
-                                    &page.entries,
-                                    &catalog_entries,
-                                    &actions,
-                                );
-                                *catalog_paging.borrow_mut() =
-                                    page.next_offset.map(|offset| (client, criteria, offset));
-                                results_panel.set_visible(true);
-                                idle_panel.set_visible(false);
-                                no_matches.set_visible(page.entries.is_empty());
-                                catalog_label.set_text("Search results");
-                                add_all.set_label("Add All Matches");
-                                browse.track_load_more.set_label("Load More Matches");
-                                load_more.set_visible(page.next_offset.is_some());
-                                load_more.set_sensitive(page.next_offset.is_some());
-                            } else {
-                                begin_browse(
-                                    &browse,
-                                    client,
-                                    browse.selection.borrow().clone(),
-                                    actions.sender.clone(),
-                                );
-                            }
+                            send_search_refresh(
+                                client,
+                                criteria,
+                                result_count,
+                                query_revision,
+                                refresh_generation,
+                                actions.sender.clone(),
+                            );
+                        } else if browse.search_view_open.get()
+                            && browse.search_workspace.borrow().open() == SearchPanel::Criteria
+                        {
+                            status.set_text("Play history cleared.");
+                        } else if browse
+                            .search_workspace
+                            .borrow()
+                            .is_current_request(generation)
+                        {
+                            begin_browse(
+                                &browse,
+                                client,
+                                browse.selection.borrow().clone(),
+                                actions.sender.clone(),
+                            );
+                        } else {
                             status.set_text("Play history cleared.");
                         }
-                        Err(error) => {
-                            status.set_text(&format!("Could not clear play history: {error}"));
+                    }
+                    Err(error) => {
+                        status.set_text(&format!("Could not clear play history: {error}"));
+                    }
+                },
+                UiEvent::SearchRefreshed {
+                    result,
+                    query_revision,
+                    refresh_generation,
+                } => match result {
+                    Ok((page, client, criteria)) => {
+                        if !browse.search_workspace.borrow_mut().refresh_results(
+                            query_revision,
+                            refresh_generation,
+                            page.clone(),
+                        ) {
+                            continue;
+                        }
+                        *active_search.borrow_mut() = Some(criteria.clone());
+                        *catalog_paging.borrow_mut() = page
+                            .next_offset
+                            .map(|offset| (client, criteria.clone(), offset));
+                        let search_is_visible = browse.search_view_open.get()
+                            && browse.search_workspace.borrow().open() == SearchPanel::Results;
+                        if search_is_visible {
+                            browse.track_selection.borrow_mut().reset();
+                            browse.search_results_active.set(true);
+                            browse.search_criteria_panel.set_visible(false);
+                            browse.panel.set_visible(false);
+                            browse.clear_search_results.set_visible(true);
+                            replace_search_chips(&search_chips, &criteria);
+                            remember_catalog_entries(&catalog_details, &page.entries);
+                            replace_catalog_rows(
+                                &catalog_list,
+                                &page.entries,
+                                &catalog_entries,
+                                &actions,
+                            );
+                            results_panel.set_visible(true);
+                            idle_panel.set_visible(false);
+                            no_matches.set_text("No tracks match the current search.");
+                            no_matches.set_visible(page.entries.is_empty());
+                            catalog_label.set_text("Search results");
+                            add_all.set_label("Add All Matches");
+                            browse.track_load_more.set_label("Load More Matches");
+                            load_more.set_visible(page.next_offset.is_some());
+                            load_more.set_sensitive(page.next_offset.is_some());
+                            status.set_text("Play history cleared. Search results refreshed.");
                         }
                     }
-                }
+                    Err(error) => {
+                        if browse
+                            .search_workspace
+                            .borrow()
+                            .is_current_results_refresh(query_revision, refresh_generation)
+                            && browse.search_view_open.get()
+                        {
+                            status.set_text(&format!("Could not refresh Search: {error}"));
+                        }
+                    }
+                },
                 UiEvent::Threshold(Ok(_)) => {}
                 UiEvent::Threshold(Err(error)) => {
                     status.set_text(&format!("Could not save played threshold: {error}"));
@@ -3368,7 +3397,19 @@ fn show_search_panel(browse: &BrowseUi) {
         SearchPanel::Results => {
             let workspace = browse.search_workspace.borrow();
             let Some(results) = workspace.results().cloned() else {
+                let pending = workspace.is_search_pending();
                 drop(workspace);
+                if pending {
+                    browse.search_results_active.set(true);
+                    browse.search_criteria_panel.set_visible(false);
+                    browse.results_panel.set_visible(true);
+                    browse.clear_search_results.set_visible(false);
+                    browse.no_matches.set_visible(false);
+                    browse.add_selected.set_sensitive(false);
+                    browse.add_all.set_sensitive(false);
+                    browse.status.set_text("Searching the Library…");
+                    return;
+                }
                 browse.search_workspace.borrow_mut().edit_criteria();
                 browse.search_criteria_panel.set_visible(true);
                 browse.results_panel.set_visible(false);
@@ -3742,21 +3783,10 @@ fn render_catalog_row(entry: &LibraryEntry, actions: &CatalogActions) -> gtk::Li
         let clear_actions = actions.clone();
         clear_history.connect_clicked(move |_| {
             if let Some(client) = clear_actions.server_state.borrow().client() {
-                let criteria = clear_actions
-                    .search_results_active
-                    .get()
-                    .then(|| clear_actions.active_search.borrow().clone())
-                    .flatten();
-                let loaded_results = cached_search_result_count(
-                    &clear_actions.search_workspace,
-                    clear_actions.search_results_active.get(),
-                );
                 let generation = clear_actions.search_workspace.borrow_mut().begin_request();
                 send_clear_entry_history(
                     client,
                     clear_path.clone(),
-                    criteria,
-                    loaded_results,
                     generation,
                     clear_actions.sender.clone(),
                 );
@@ -3864,7 +3894,7 @@ fn send_import_state(client: ServerClient, path: PathBuf, sender: Sender<UiEvent
             .import_app_state(&path)
             .map_err(|error| error.to_string())
             .and_then(|_| {
-                let (state, page, threshold, client, _) = read_library_view(&client, None, None)?;
+                let (state, page, threshold, client, _) = read_library_view(&client, None)?;
                 let queue = client.queue_state().map_err(|error| error.to_string())?;
                 Ok((state, page, threshold, queue))
             });
@@ -3878,7 +3908,7 @@ fn send_reset_app_state(client: ServerClient, sender: Sender<UiEvent>) {
             .reset_app_state()
             .map_err(|error| error.to_string())
             .and_then(|_| {
-                let (state, page, threshold, client, _) = read_library_view(&client, None, None)?;
+                let (state, page, threshold, client, _) = read_library_view(&client, None)?;
                 let queue = client.queue_state().map_err(|error| error.to_string())?;
                 Ok((state, page, threshold, queue))
             });
@@ -3886,23 +3916,9 @@ fn send_reset_app_state(client: ServerClient, sender: Sender<UiEvent>) {
     });
 }
 
-fn cached_search_result_count(
-    workspace: &Rc<RefCell<SearchWorkspace>>,
-    search_results_active: bool,
-) -> Option<usize> {
-    search_results_active.then(|| {
-        workspace
-            .borrow()
-            .results()
-            .map_or(32, |results| results.entries.len().max(32))
-    })
-}
-
 fn send_clear_entry_history(
     client: ServerClient,
     path: PathBuf,
-    criteria: Option<SearchCriteria>,
-    loaded_results: Option<usize>,
     generation: u64,
     sender: Sender<UiEvent>,
 ) {
@@ -3910,25 +3926,33 @@ fn send_clear_entry_history(
         let result = client
             .clear_entry_play_history(&path)
             .map_err(|error| error.to_string())
-            .and_then(|_| read_library_view(&client, criteria, loaded_results));
+            .and_then(|_| read_history_state(&client));
         let _ = sender.send(UiEvent::HistoryCleared { result, generation });
     });
 }
 
-fn send_clear_all_history(
-    client: ServerClient,
-    criteria: Option<SearchCriteria>,
-    loaded_results: Option<usize>,
-    generation: u64,
-    sender: Sender<UiEvent>,
-) {
+fn send_clear_all_history(client: ServerClient, generation: u64, sender: Sender<UiEvent>) {
     thread::spawn(move || {
         let result = client
             .clear_all_play_history()
             .map_err(|error| error.to_string())
-            .and_then(|_| read_library_view(&client, criteria, loaded_results));
+            .and_then(|_| read_history_state(&client));
         let _ = sender.send(UiEvent::HistoryCleared { result, generation });
     });
+}
+
+fn read_history_state(client: &ServerClient) -> Result<(LibraryState, u8, ServerClient), String> {
+    let state = client.library_state().map_err(|error| error.to_string())?;
+    let threshold = client
+        .played_threshold()
+        .map_err(|error| error.to_string())?;
+    Ok((state, threshold, client.clone()))
+}
+
+fn cached_search_result_count(workspace: &SearchWorkspace) -> usize {
+    workspace
+        .results()
+        .map_or(32, |results| results.entries.len().max(32))
 }
 
 fn start_catalog_scan(
@@ -3983,6 +4007,26 @@ fn send_search(
     });
 }
 
+fn send_search_refresh(
+    client: ServerClient,
+    criteria: SearchCriteria,
+    result_count: usize,
+    query_revision: u64,
+    refresh_generation: u64,
+    sender: Sender<UiEvent>,
+) {
+    thread::spawn(move || {
+        let result = read_search_results(&client, &criteria, result_count)
+            .map(|page| (page, client.clone(), criteria))
+            .map_err(|error| error.to_string());
+        let _ = sender.send(UiEvent::SearchRefreshed {
+            result,
+            query_revision,
+            refresh_generation,
+        });
+    });
+}
+
 fn read_restored_library(
     client: &ServerClient,
 ) -> Result<(LibraryState, u8, ServerClient), String> {
@@ -3996,7 +4040,6 @@ fn read_restored_library(
 fn read_library_view(
     client: &ServerClient,
     criteria: Option<SearchCriteria>,
-    loaded_results: Option<usize>,
 ) -> Result<
     (
         LibraryState,
@@ -4010,7 +4053,7 @@ fn read_library_view(
     let state = client.library_state().map_err(|error| error.to_string())?;
     let all_tracks = SearchCriteria::default();
     let page_criteria = criteria.as_ref().unwrap_or(&all_tracks);
-    let page = read_search_results(client, page_criteria, loaded_results.unwrap_or(32))?;
+    let page = read_search_results(client, page_criteria, 32)?;
     let threshold = client
         .played_threshold()
         .map_err(|error| error.to_string())?;
