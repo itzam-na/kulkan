@@ -56,6 +56,38 @@ fn adding_a_root_does_not_scan_until_the_listener_requests_a_scan() {
 }
 
 #[test]
+fn large_scan_diagnostic_sets_do_not_overflow_the_ipc_response() {
+    let directory = TestDirectory::new();
+    let root = directory.0.join("music");
+    fs::create_dir(&root).unwrap();
+    for index in 0..800 {
+        fs::write(
+            root.join(format!("broken-{index:04}.m4a")),
+            b"invalid audio",
+        )
+        .unwrap();
+    }
+    let socket_path = directory.0.join("server.sock");
+    let executable = PathBuf::from(env!("CARGO_BIN_EXE_kulkan-server"));
+    let mut server =
+        ServerProcess::start(&executable, &socket_path, Duration::from_secs(2)).unwrap();
+    server.add_library_root(&root).unwrap();
+
+    let summary = server.scan_library().unwrap();
+
+    assert_eq!(
+        summary.media_errors.len() + summary.omitted_media_errors,
+        800
+    );
+    assert_eq!(
+        summary.incomplete_paths.len() + summary.omitted_incomplete_paths,
+        800
+    );
+    assert!(summary.omitted_media_errors > 0);
+    server.shutdown().unwrap();
+}
+
+#[test]
 fn selected_parent_folder_scan_does_not_change_an_unselected_nested_folder() {
     let directory = TestDirectory::new();
     let parent = directory.0.join("music");

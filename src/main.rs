@@ -3611,12 +3611,11 @@ fn read_search_results(
 }
 
 fn scan_status_text(summary: &ScanSummary) -> String {
+    let incomplete_count = summary.incomplete_paths.len() + summary.omitted_incomplete_paths;
+    let media_error_count = summary.media_errors.len() + summary.omitted_media_errors;
     let mut text = format!(
         "Scan complete: {} active, {} inactive; {} incomplete area(s), {} media error(s).",
-        summary.active_entries,
-        summary.inactive_entries,
-        summary.incomplete_paths.len(),
-        summary.media_errors.len()
+        summary.active_entries, summary.inactive_entries, incomplete_count, media_error_count
     );
     for path in &summary.incomplete_paths {
         text.push_str(&format!("\nIncomplete: {}", path.display()));
@@ -3626,6 +3625,12 @@ fn scan_status_text(summary: &ScanSummary) -> String {
             "\nMedia error: {} — {}",
             error.path.display(),
             error.message
+        ));
+    }
+    if summary.omitted_incomplete_paths + summary.omitted_media_errors > 0 {
+        text.push_str(&format!(
+            "\n{} additional diagnostic(s) omitted from the IPC response.",
+            summary.omitted_incomplete_paths + summary.omitted_media_errors
         ));
     }
     text

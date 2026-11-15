@@ -111,6 +111,12 @@ pub struct LibraryState {
 pub struct ScanSummary {
     pub incomplete_paths: Vec<PathBuf>,
     pub media_errors: Vec<MediaError>,
+    /// Diagnostics omitted to keep the scan response within the IPC frame limit.
+    #[serde(default)]
+    pub omitted_incomplete_paths: usize,
+    /// Diagnostics omitted to keep the scan response within the IPC frame limit.
+    #[serde(default)]
+    pub omitted_media_errors: usize,
     pub active_entries: usize,
     pub inactive_entries: usize,
 }

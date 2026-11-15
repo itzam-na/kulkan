@@ -459,6 +459,8 @@ impl LibraryService {
         Message::ScanSummary(ScanSummary {
             incomplete_paths: result.incomplete_paths,
             media_errors: result.media_errors,
+            omitted_incomplete_paths: 0,
+            omitted_media_errors: 0,
             active_entries,
             inactive_entries,
         })
@@ -1315,15 +1317,45 @@ fn set_io_timeout(stream: &UnixStream, timeout: Duration) -> io::Result<()> {
 fn write_server_response(stream: &mut UnixStream, response: &Message) -> io::Result<()> {
     match write_message(stream, response) {
         Ok(()) => Ok(()),
-        Err(ProtocolError::FrameTooLarge { .. }) => write_message(
-            stream,
-            &Message::LibraryOperationFailed(
-                "server response exceeded the IPC frame limit; request a smaller catalog page"
-                    .to_owned(),
-            ),
-        )
-        .map_err(protocol_error_to_io),
+        Err(ProtocolError::FrameTooLarge { .. }) => match response {
+            Message::ScanSummary(summary) => write_bounded_scan_summary(stream, summary),
+            _ => write_message(
+                stream,
+                &Message::LibraryOperationFailed(
+                    "server response exceeded the IPC frame limit".to_owned(),
+                ),
+            )
+            .map_err(protocol_error_to_io),
+        },
         Err(error) => Err(protocol_error_to_io(error)),
+    }
+}
+
+fn write_bounded_scan_summary(stream: &mut UnixStream, summary: &ScanSummary) -> io::Result<()> {
+    let mut summary = summary.clone();
+    loop {
+        match write_message(stream, &Message::ScanSummary(summary.clone())) {
+            Ok(()) => return Ok(()),
+            Err(ProtocolError::FrameTooLarge { .. }) => {
+                let retained_incomplete_paths = summary.incomplete_paths.len() / 2;
+                let retained_media_errors = summary.media_errors.len() / 2;
+                summary.omitted_incomplete_paths +=
+                    summary.incomplete_paths.len() - retained_incomplete_paths;
+                summary.omitted_media_errors += summary.media_errors.len() - retained_media_errors;
+                summary.incomplete_paths.truncate(retained_incomplete_paths);
+                summary.media_errors.truncate(retained_media_errors);
+                if summary.incomplete_paths.is_empty() && summary.media_errors.is_empty() {
+                    return write_message(
+                        stream,
+                        &Message::LibraryOperationFailed(
+                            "scan summary metadata exceeds the IPC frame limit".to_owned(),
+                        ),
+                    )
+                    .map_err(protocol_error_to_io);
+                }
+            }
+            Err(error) => return Err(protocol_error_to_io(error)),
+        }
     }
 }
 
