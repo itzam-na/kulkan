@@ -1106,6 +1106,8 @@ fn build_main_window(application: &gtk::Application, server_state: Rc<RefCell<Se
     let clear_all_workspace = Rc::clone(&search_workspace);
     clear_all_history.connect_clicked(move |_| {
         if let Some(client) = clear_all_state.borrow().client() {
+            let loaded_results =
+                cached_search_result_count(&clear_all_workspace, clear_all_search_visible.get());
             let generation = clear_all_workspace.borrow_mut().begin_request();
             send_clear_all_history(
                 client,
@@ -1113,6 +1115,7 @@ fn build_main_window(application: &gtk::Application, server_state: Rc<RefCell<Se
                     .get()
                     .then(|| clear_all_search.borrow().clone())
                     .flatten(),
+                loaded_results,
                 generation,
                 clear_all_sender.clone(),
             );
@@ -3744,11 +3747,16 @@ fn render_catalog_row(entry: &LibraryEntry, actions: &CatalogActions) -> gtk::Li
                     .get()
                     .then(|| clear_actions.active_search.borrow().clone())
                     .flatten();
+                let loaded_results = cached_search_result_count(
+                    &clear_actions.search_workspace,
+                    clear_actions.search_results_active.get(),
+                );
                 let generation = clear_actions.search_workspace.borrow_mut().begin_request();
                 send_clear_entry_history(
                     client,
                     clear_path.clone(),
                     criteria,
+                    loaded_results,
                     generation,
                     clear_actions.sender.clone(),
                 );
@@ -3856,7 +3864,7 @@ fn send_import_state(client: ServerClient, path: PathBuf, sender: Sender<UiEvent
             .import_app_state(&path)
             .map_err(|error| error.to_string())
             .and_then(|_| {
-                let (state, page, threshold, client, _) = read_library_view(&client, None)?;
+                let (state, page, threshold, client, _) = read_library_view(&client, None, None)?;
                 let queue = client.queue_state().map_err(|error| error.to_string())?;
                 Ok((state, page, threshold, queue))
             });
@@ -3870,7 +3878,7 @@ fn send_reset_app_state(client: ServerClient, sender: Sender<UiEvent>) {
             .reset_app_state()
             .map_err(|error| error.to_string())
             .and_then(|_| {
-                let (state, page, threshold, client, _) = read_library_view(&client, None)?;
+                let (state, page, threshold, client, _) = read_library_view(&client, None, None)?;
                 let queue = client.queue_state().map_err(|error| error.to_string())?;
                 Ok((state, page, threshold, queue))
             });
@@ -3878,10 +3886,23 @@ fn send_reset_app_state(client: ServerClient, sender: Sender<UiEvent>) {
     });
 }
 
+fn cached_search_result_count(
+    workspace: &Rc<RefCell<SearchWorkspace>>,
+    search_results_active: bool,
+) -> Option<usize> {
+    search_results_active.then(|| {
+        workspace
+            .borrow()
+            .results()
+            .map_or(32, |results| results.entries.len().max(32))
+    })
+}
+
 fn send_clear_entry_history(
     client: ServerClient,
     path: PathBuf,
     criteria: Option<SearchCriteria>,
+    loaded_results: Option<usize>,
     generation: u64,
     sender: Sender<UiEvent>,
 ) {
@@ -3889,7 +3910,7 @@ fn send_clear_entry_history(
         let result = client
             .clear_entry_play_history(&path)
             .map_err(|error| error.to_string())
-            .and_then(|_| read_library_view(&client, criteria));
+            .and_then(|_| read_library_view(&client, criteria, loaded_results));
         let _ = sender.send(UiEvent::HistoryCleared { result, generation });
     });
 }
@@ -3897,6 +3918,7 @@ fn send_clear_entry_history(
 fn send_clear_all_history(
     client: ServerClient,
     criteria: Option<SearchCriteria>,
+    loaded_results: Option<usize>,
     generation: u64,
     sender: Sender<UiEvent>,
 ) {
@@ -3904,7 +3926,7 @@ fn send_clear_all_history(
         let result = client
             .clear_all_play_history()
             .map_err(|error| error.to_string())
-            .and_then(|_| read_library_view(&client, criteria));
+            .and_then(|_| read_library_view(&client, criteria, loaded_results));
         let _ = sender.send(UiEvent::HistoryCleared { result, generation });
     });
 }
@@ -3974,6 +3996,7 @@ fn read_restored_library(
 fn read_library_view(
     client: &ServerClient,
     criteria: Option<SearchCriteria>,
+    loaded_results: Option<usize>,
 ) -> Result<
     (
         LibraryState,
@@ -3987,13 +4010,44 @@ fn read_library_view(
     let state = client.library_state().map_err(|error| error.to_string())?;
     let all_tracks = SearchCriteria::default();
     let page_criteria = criteria.as_ref().unwrap_or(&all_tracks);
-    let page = client
-        .search_catalog(page_criteria, 0, 32)
-        .map_err(|error| error.to_string())?;
+    let page = read_search_results(client, page_criteria, loaded_results.unwrap_or(32))?;
     let threshold = client
         .played_threshold()
         .map_err(|error| error.to_string())?;
     Ok((state, page, threshold, client.clone(), criteria))
+}
+
+fn read_search_results(
+    client: &ServerClient,
+    criteria: &SearchCriteria,
+    result_count: usize,
+) -> Result<CatalogPage, String> {
+    if result_count == 0 {
+        return Ok(CatalogPage {
+            entries: Vec::new(),
+            next_offset: None,
+        });
+    }
+
+    let mut entries = Vec::with_capacity(result_count);
+    let mut offset = 0;
+    let mut next_offset = None;
+    while entries.len() < result_count {
+        let limit = (result_count - entries.len()).min(32);
+        let page = client
+            .search_catalog(criteria, offset, limit)
+            .map_err(|error| error.to_string())?;
+        entries.extend(page.entries);
+        next_offset = page.next_offset;
+        let Some(next) = next_offset else {
+            break;
+        };
+        offset = next;
+    }
+    Ok(CatalogPage {
+        entries,
+        next_offset,
+    })
 }
 
 fn scan_status_text(summary: &ScanSummary) -> String {
