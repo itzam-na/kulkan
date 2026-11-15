@@ -2293,10 +2293,10 @@ fn install_library_events(receiver: Receiver<UiEvent>, ui: LibraryUi) {
                         true,
                         true,
                     );
-                    saved_startup_view.set(state.startup_view);
-                    set_startup_view_control(
+                    restore_startup_view_control(
                         &startup_view,
                         &startup_view_syncing,
+                        &saved_startup_view,
                         state.startup_view,
                     );
                     startup_view.set_sensitive(true);
@@ -2434,10 +2434,10 @@ fn install_library_events(receiver: Receiver<UiEvent>, ui: LibraryUi) {
                 }
                 UiEvent::StateImported(Ok((state, page, threshold, snapshot))) => {
                     clear_search.emit_clicked();
-                    saved_startup_view.set(state.startup_view);
-                    set_startup_view_control(
+                    restore_startup_view_control(
                         &startup_view,
                         &startup_view_syncing,
+                        &saved_startup_view,
                         state.startup_view,
                     );
                     *roots_model.borrow_mut() = state.selected_roots.clone();
@@ -2490,10 +2490,10 @@ fn install_library_events(receiver: Receiver<UiEvent>, ui: LibraryUi) {
                 }
                 UiEvent::StateReset(Ok((state, page, threshold, snapshot))) => {
                     clear_search.emit_clicked();
-                    saved_startup_view.set(state.startup_view);
-                    set_startup_view_control(
+                    restore_startup_view_control(
                         &startup_view,
                         &startup_view_syncing,
+                        &saved_startup_view,
                         state.startup_view,
                     );
                     *roots_model.borrow_mut() = state.selected_roots.clone();
@@ -4032,6 +4032,16 @@ fn set_startup_view_control(dropdown: &gtk::DropDown, syncing: &Rc<Cell<bool>>, 
     syncing.set(true);
     dropdown.set_selected(index);
     syncing.set(false);
+}
+
+fn restore_startup_view_control(
+    dropdown: &gtk::DropDown,
+    syncing: &Rc<Cell<bool>>,
+    saved_view: &Rc<Cell<BrowseView>>,
+    view: BrowseView,
+) {
+    saved_view.set(view);
+    set_startup_view_control(dropdown, syncing, view);
 }
 
 fn set_server_controls_sensitive(
