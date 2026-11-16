@@ -1,7 +1,7 @@
 pkgbase = kulkan
 	pkgdesc = Native GTK music player for a local audio collection
 	pkgver = 0.1.1
-	pkgrel = 2
+	pkgrel = 3
 	url = https://github.com/itzam-na/kulkan
 	arch = x86_64
 	license = GPL-3.0-or-later
@@ -14,7 +14,7 @@ pkgbase = kulkan
 	depends = gst-plugins-good
 	optdepends = xdg-desktop-portal-gtk: portal-backed folder chooser
 	optdepends = gst-plugin-pipewire: direct PipeWire audio output
-	source = git+https://github.com/itzam-na/kulkan.git#commit=8d3479183f8851dd99c258a5fe5e38edd8c530b9
+	source = git+https://github.com/itzam-na/kulkan.git#commit=3e209df4b79464dba24646c542fd23d448f78443
 	sha256sums = SKIP
 
 pkgname = kulkan

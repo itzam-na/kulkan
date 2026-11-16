@@ -1,7 +1,7 @@
 # Maintainer: Itzamná <itzamna@tenochtitlan.may>
 pkgname=kulkan
 pkgver=0.1.1
-pkgrel=2
+pkgrel=3
 pkgdesc="Native GTK music player for a local audio collection"
 arch=('x86_64')
 url="https://github.com/itzam-na/kulkan"
@@ -12,7 +12,7 @@ optdepends=(
   'xdg-desktop-portal-gtk: portal-backed folder chooser'
   'gst-plugin-pipewire: direct PipeWire audio output'
 )
-_commit=8d3479183f8851dd99c258a5fe5e38edd8c530b9
+_commit=3e209df4b79464dba24646c542fd23d448f78443
 source=("git+https://github.com/itzam-na/kulkan.git#commit=${_commit}")
 sha256sums=('SKIP')
 
