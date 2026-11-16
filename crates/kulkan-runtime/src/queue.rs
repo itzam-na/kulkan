@@ -120,6 +120,9 @@ impl QueueService {
             || matches!(
                 message,
                 Message::AppendQueue(_)
+                    | Message::ReplaceQueue(_)
+                    | Message::ReplaceFirstQueueEntry(_)
+                    | Message::ListenNextQueueEntry(_)
                     | Message::GetQueueState
                     | Message::PlayQueueEntry(_)
                     | Message::PreviousQueueEntry
@@ -153,6 +156,20 @@ impl QueueService {
                 self.append(tracks);
                 self.queue_state_message(library)
             }
+            Message::ReplaceQueue(tracks) => match self.replace_queue_and_play(tracks, library) {
+                Ok(()) => self.queue_state_message(library),
+                Err(error) => Message::QueueOperationFailed(error),
+            },
+            Message::ReplaceFirstQueueEntry(track) => {
+                match self.replace_first_and_play(track, library) {
+                    Ok(()) => self.queue_state_message(library),
+                    Err(error) => Message::QueueOperationFailed(error),
+                }
+            }
+            Message::ListenNextQueueEntry(track) => match self.listen_next(track, library) {
+                Ok(()) => self.queue_state_message(library),
+                Err(error) => Message::QueueOperationFailed(error),
+            },
             Message::GetQueueState => self.queue_state_message(library),
             Message::PlayQueueEntry(entry_id) => match self.play_entry(entry_id, library) {
                 Ok(()) => self.queue_state_message(library),
@@ -499,6 +516,75 @@ impl QueueService {
             });
             self.dirty = true;
         }
+    }
+
+    fn replace_queue_and_play(
+        &mut self,
+        tracks: Vec<PathBuf>,
+        library: &mut LibraryService,
+    ) -> Result<(), String> {
+        self.observe_current(library)?;
+        self.playback.handle(Message::StopPlayback);
+        self.entries.clear();
+        self.current_entry_id = None;
+        self.last_failure = None;
+        self.attempt = None;
+        self.dirty = true;
+        self.append(tracks);
+        if let Some(entry_id) = self.entries.first().map(|entry| entry.id) {
+            self.play_entry(entry_id, library)?;
+        }
+        Ok(())
+    }
+
+    fn replace_first_and_play(
+        &mut self,
+        track: PathBuf,
+        library: &mut LibraryService,
+    ) -> Result<(), String> {
+        self.observe_current(library)?;
+        let index = self
+            .current_entry_id
+            .and_then(|current_id| self.entries.iter().position(|entry| entry.id == current_id))
+            .unwrap_or(0);
+        self.playback.handle(Message::StopPlayback);
+        self.attempt = None;
+        self.current_entry_id = None;
+
+        let entry = QueueEntry {
+            id: self.next_entry_id,
+            track,
+            failed: false,
+        };
+        self.next_entry_id = self.next_entry_id.wrapping_add(1).max(1);
+        if self.entries.is_empty() {
+            self.entries.push(entry.clone());
+        } else {
+            self.entries[index] = entry.clone();
+        }
+        self.dirty = true;
+        self.play_entry(entry.id, library)
+    }
+
+    fn listen_next(&mut self, track: PathBuf, library: &mut LibraryService) -> Result<(), String> {
+        self.observe_current(library)?;
+        let was_playing = self.current_entry_id.is_some();
+        let insert_at = self
+            .current_entry_id
+            .and_then(|current_id| self.entries.iter().position(|entry| entry.id == current_id))
+            .map_or(0, |index| index + 1);
+        let entry = QueueEntry {
+            id: self.next_entry_id,
+            track,
+            failed: false,
+        };
+        self.next_entry_id = self.next_entry_id.wrapping_add(1).max(1);
+        self.entries.insert(insert_at, entry.clone());
+        self.dirty = true;
+        if !was_playing {
+            self.play_entry(entry.id, library)?;
+        }
+        Ok(())
     }
 
     fn play_entry(&mut self, entry_id: u64, library: &mut LibraryService) -> Result<(), String> {

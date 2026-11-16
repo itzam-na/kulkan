@@ -7,12 +7,13 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::path::{Path, PathBuf};
 
 use kulkan_library::{
-    BrowsePage, BrowseSelection, BrowseView, CatalogPage, LibraryState, ScanSummary, SearchCriteria,
+    BrowsePage, BrowseSelection, BrowseView, CatalogPage, LibraryState, ListPlaybackBehavior,
+    ScanSummary, SearchCriteria,
 };
 use serde::{Deserialize, Serialize};
 
 /// The current wire-protocol version understood by Kulkán clients and servers.
-pub const CURRENT_PROTOCOL_VERSION: u16 = 9;
+pub const CURRENT_PROTOCOL_VERSION: u16 = 10;
 
 /// Maximum JSON envelope size accepted on the local socket.
 pub const MAX_FRAME_SIZE: usize = 64 * 1024;
@@ -41,6 +42,7 @@ pub enum Message {
     ScanLibrary,
     ScanLibrarySelected(Vec<PathBuf>),
     SetStartupView(BrowseView),
+    SetListPlaybackBehavior(ListPlaybackBehavior),
     GetCustomCss,
     SetCustomCss(Option<String>),
     CustomCss(Option<String>),
@@ -76,6 +78,9 @@ pub enum Message {
     PlaybackState(PlaybackSnapshot),
     PlaybackOperationFailed(String),
     AppendQueue(Vec<PathBuf>),
+    ReplaceQueue(Vec<PathBuf>),
+    ReplaceFirstQueueEntry(PathBuf),
+    ListenNextQueueEntry(PathBuf),
     GetQueueState,
     PlayQueueEntry(u64),
     PreviousQueueEntry,

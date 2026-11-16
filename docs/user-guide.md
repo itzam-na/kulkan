@@ -34,7 +34,7 @@ Select one or more folders and choose **Scan selected**, or choose **Scan all** 
 
 Kulkán remembers configured folders and the last scanned catalog locally. Removing a folder does not erase its catalog entries or play history; after a scan confirms those entries are no longer covered, they become inactive. If a removable drive is disconnected or access is revoked, the scan reports an incomplete area and preserves last-known entries there.
 
-Settings also contains the played threshold, play-history controls, state export/import, reset, **View on startup**, and **Appearance and CSS**. Choose Artists, Albums, or Songs; the initial default is Songs, and a changed choice takes effect on the next launch. Appearance offers Default, Catppuccin, Darcula, and Winamp presets plus an editable GTK CSS buffer. Choose a preset or edit the CSS and select **Apply**; **Reset** restores Default. Applied CSS is saved with app state and included in export/import and app-state reset.
+Settings also contains the played threshold, play-history controls, state export/import, reset, **View on startup**, **Playing from the List behaviour**, and **Appearance and CSS**. Choose Artists, Albums, or Songs; the initial default is Songs, and a changed choice takes effect on the next launch. List behavior applies to double-clicks in Search and track Lists: **Disabled** ignores them; **Substitute Queue** replaces the Queue with the clicked track and following active tracks in that List; **Replace first** replaces the currently playing Queue entry (or the first entry if playback is stopped); **Listen Next** inserts the clicked track after the current entry, or starts it if playback is stopped; **Add to Queue** appends it and starts it if the Queue was empty; and **Ask me** prompts when a Queue already exists. With no Queue, **Ask me** starts the List using **Substitute Queue**. When Queue replacement is possible, the dialog lets you choose another behavior and optionally remember it. Appearance offers Default, Catppuccin, Darcula, and Winamp presets plus an editable GTK CSS buffer. Choose a preset or edit the CSS and select **Apply**; **Reset** restores Default. Applied CSS and List behavior are saved with app state and included in export/import and app-state reset.
 
 ## Browse the catalog
 
@@ -56,7 +56,7 @@ The **Plays** column shows each entry's local qualifying-play count; zero means 
 
 ## Queue
 
-Use **Add Selected** or **Add All Matches** to append entries from search results; outside search, use **Add All Tracks**. Duplicate entries are allowed. The queue rail supports playing an entry, reordering upcoming entries, removing entries, clearing the queue, and changing repeat and shuffle modes. Queue order and repeat/shuffle settings persist across relaunches. On relaunch, the current track is restored from the beginning in a paused state.
+Use **Add Selected** or **Add All Matches** to append entries from search results; outside search, use **Add All Tracks**. Duplicate entries are allowed. Double-click a Queue entry to play that occurrence without changing Queue order; after it ends, playback continues with the next entry. The queue rail also supports reordering upcoming entries, removing entries, clearing the queue, and changing repeat and shuffle modes. Queue order and repeat/shuffle settings persist across relaunches. On relaunch, the current track is restored from the beginning in a paused state.
 
 ## Backup and keyboard shortcuts
 

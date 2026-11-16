@@ -5,7 +5,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use kulkan_runtime::{MAX_CUSTOM_CSS_BYTES, ServerProcess};
+use kulkan_runtime::{ListPlaybackBehavior, MAX_CUSTOM_CSS_BYTES, ServerProcess};
 
 static NEXT_TEST_DIR: AtomicUsize = AtomicUsize::new(0);
 
@@ -96,6 +96,60 @@ fn custom_css_persists_and_is_included_in_app_state_transfer() {
         server
             .set_custom_css(Some("x".repeat(MAX_CUSTOM_CSS_BYTES + 1)))
             .is_err()
+    );
+    server.shutdown().unwrap();
+}
+
+#[test]
+fn list_playback_behavior_persists_and_is_included_in_app_state_transfer() {
+    let directory = TestDirectory::new();
+    let socket_path = directory.0.join("server.sock");
+    let library_state_path = directory.0.join("library.json");
+    let export_path = directory.0.join("backup.json");
+    let executable = PathBuf::from(env!("CARGO_BIN_EXE_kulkan-server"));
+    let mut server = ServerProcess::start_with_library_state(
+        &executable,
+        &socket_path,
+        &library_state_path,
+        Duration::from_secs(2),
+    )
+    .unwrap();
+
+    assert_eq!(
+        server.library_state().unwrap().list_playback_behavior,
+        ListPlaybackBehavior::AskMe
+    );
+    let saved = server
+        .set_list_playback_behavior(ListPlaybackBehavior::ListenNext)
+        .unwrap();
+    assert_eq!(
+        saved.list_playback_behavior,
+        ListPlaybackBehavior::ListenNext
+    );
+    server.export_app_state(&export_path).unwrap();
+    server.shutdown().unwrap();
+
+    let mut server = ServerProcess::start_with_library_state(
+        &executable,
+        &socket_path,
+        &library_state_path,
+        Duration::from_secs(2),
+    )
+    .unwrap();
+    assert_eq!(
+        server.library_state().unwrap().list_playback_behavior,
+        ListPlaybackBehavior::ListenNext
+    );
+
+    server.reset_app_state().unwrap();
+    assert_eq!(
+        server.library_state().unwrap().list_playback_behavior,
+        ListPlaybackBehavior::AskMe
+    );
+    server.import_app_state(&export_path).unwrap();
+    assert_eq!(
+        server.library_state().unwrap().list_playback_behavior,
+        ListPlaybackBehavior::ListenNext
     );
     server.shutdown().unwrap();
 }

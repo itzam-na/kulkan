@@ -41,6 +41,7 @@ stop_smoke_servers() {
 }
 
 if [[ "$stage" == "--inside" ]]; then
+  cargo test --locked --bin kulkan queue_ui_tests -- --test-threads=1
   "$repo_root/target/debug/kulkan" >"$KULKAN_SMOKE_ROOT/kulkan.log" 2>&1 &
   app_pid=$!
   cleanup() {
@@ -125,7 +126,7 @@ set -e
 if (( result != 0 )); then
   cat "$smoke_root/weston.log" >&2
 else
-  echo "GTK Library workspace smoke test passed"
+  echo "GTK UI smoke test passed"
 fi
 rm -rf -- "$smoke_root"
 exit "$result"

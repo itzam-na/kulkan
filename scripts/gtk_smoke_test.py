@@ -38,6 +38,23 @@ def click(window: str, x: int, y: int) -> None:
     run("xdotool", "mousemove", "--window", window, str(x), str(y), "click", "1")
 
 
+def scroll_down(window: str, x: int, y: int, clicks: int = 8) -> None:
+    run(
+        "xdotool",
+        "mousemove",
+        "--window",
+        window,
+        str(x),
+        str(y),
+        "click",
+        "--repeat",
+        str(clicks),
+        "--delay",
+        "50",
+        "5",
+    )
+
+
 def main() -> None:
     deadline = time.monotonic() + 20.0
     window = None
@@ -85,6 +102,16 @@ def main() -> None:
     wait_for_text(window, "Search title")
     if "gtk-smoke-query" in screenshot_text(window):
         raise AssertionError("Clear did not blank the Search criteria")
+
+    click(window, 120, 238)  # Open Settings
+    settings_window = run(
+        "xdotool", "search", "--onlyvisible", "--name", "Settings"
+    ).splitlines()[0]
+    wait_for_text(settings_window, "Library folders")
+    scroll_down(settings_window, 500, 500)
+    settings_text = wait_for_text(settings_window, "Playing from the List behaviour")
+    if "library-sidebar" not in settings_text:
+        raise AssertionError("CSS editor contents are not visible in Settings")
 
     print("GTK Library workspace smoke test passed")
 

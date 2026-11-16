@@ -97,6 +97,18 @@ pub struct MediaError {
     pub message: String,
 }
 
+/// Queue behavior selected when a Track is activated from a Library List.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub enum ListPlaybackBehavior {
+    Disabled,
+    SubstituteQueue,
+    ReplaceFirst,
+    ListenNext,
+    AddToQueue,
+    #[default]
+    AskMe,
+}
+
 /// Small result returned after changing roots; adding a root never scans it.
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 pub struct LibraryState {
@@ -104,6 +116,8 @@ pub struct LibraryState {
     pub catalog_entries: usize,
     #[serde(default)]
     pub startup_view: BrowseView,
+    #[serde(default)]
+    pub list_playback_behavior: ListPlaybackBehavior,
 }
 
 /// Summary of an explicit scan, without transferring the full catalog in one IPC frame.

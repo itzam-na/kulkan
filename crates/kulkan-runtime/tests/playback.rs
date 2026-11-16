@@ -434,10 +434,111 @@ fn queue_playback_starts_the_requested_occurrence() {
 
     let started = server.play_queue_entry(queue.entries[1].id).unwrap();
 
+    assert_eq!(started.entries, queue.entries);
     assert_eq!(started.current_entry_id, Some(queue.entries[1].id));
     assert_eq!(started.playback.track, Some(second_track));
     assert_eq!(started.playback.status, PlaybackStatus::Playing);
     assert!(!started.entries[1].failed);
+    server.shutdown().unwrap();
+}
+
+#[test]
+fn replacing_queue_plays_the_new_list_in_order() {
+    let directory = TestDirectory::new();
+    let old_track = directory.0.join("old.wav");
+    let first_track = directory.0.join("first.wav");
+    let second_track = directory.0.join("second.wav");
+    write_pcm_wav(&old_track, 32_000);
+    write_pcm_wav(&first_track, 4_000);
+    write_pcm_wav(&second_track, 12_000);
+    let mut server = start_headless_server(&directory);
+    let original = server
+        .append_to_queue(std::slice::from_ref(&old_track))
+        .unwrap();
+    server.play_queue_entry(original.entries[0].id).unwrap();
+
+    let replaced = server
+        .replace_queue_and_play(&[first_track.clone(), second_track.clone()])
+        .unwrap();
+
+    assert_eq!(
+        replaced
+            .entries
+            .iter()
+            .map(|entry| entry.track.clone())
+            .collect::<Vec<_>>(),
+        vec![first_track.clone(), second_track.clone()]
+    );
+    assert_eq!(replaced.current_entry_id, Some(replaced.entries[0].id));
+    assert_eq!(replaced.playback.track, Some(first_track));
+    let advanced = wait_for_queue(&server, |state| {
+        state.current_entry_id == Some(replaced.entries[1].id)
+    });
+    assert_eq!(advanced.playback.track, Some(second_track));
+    assert_eq!(advanced.entries.len(), 2);
+    server.shutdown().unwrap();
+}
+
+#[test]
+fn replacing_first_queue_entry_preserves_the_rest_of_the_queue() {
+    let directory = TestDirectory::new();
+    let first_track = directory.0.join("first.wav");
+    let replacement = directory.0.join("replacement.wav");
+    let second_track = directory.0.join("second.wav");
+    write_pcm_wav(&first_track, 32_000);
+    write_pcm_wav(&replacement, 4_000);
+    write_pcm_wav(&second_track, 12_000);
+    let mut server = start_headless_server(&directory);
+    let original = server
+        .append_to_queue(&[first_track, second_track.clone()])
+        .unwrap();
+    server.play_queue_entry(original.entries[0].id).unwrap();
+
+    let replaced = server
+        .replace_first_queue_entry_and_play(&replacement)
+        .unwrap();
+
+    assert_eq!(replaced.entries.len(), 2);
+    assert_eq!(replaced.entries[0].track, replacement);
+    assert_eq!(replaced.entries[1], original.entries[1]);
+    assert_eq!(replaced.current_entry_id, Some(replaced.entries[0].id));
+    let advanced = wait_for_queue(&server, |state| {
+        state.current_entry_id == Some(original.entries[1].id)
+    });
+    assert_eq!(advanced.playback.track, Some(second_track));
+    server.shutdown().unwrap();
+}
+
+#[test]
+fn listen_next_inserts_after_the_current_entry_without_interrupting_it() {
+    let directory = TestDirectory::new();
+    let current_track = directory.0.join("current.wav");
+    let listened_next = directory.0.join("listen-next.wav");
+    let later_track = directory.0.join("later.wav");
+    write_pcm_wav(&current_track, 4_000);
+    write_pcm_wav(&listened_next, 12_000);
+    write_pcm_wav(&later_track, 12_000);
+    let mut server = start_headless_server(&directory);
+    let original = server
+        .append_to_queue(&[current_track.clone(), later_track.clone()])
+        .unwrap();
+    server.play_queue_entry(original.entries[0].id).unwrap();
+
+    let inserted = server.listen_next(&listened_next).unwrap();
+
+    assert_eq!(inserted.current_entry_id, Some(original.entries[0].id));
+    assert_eq!(inserted.playback.track, Some(current_track));
+    assert_eq!(inserted.entries.len(), 3);
+    assert_eq!(inserted.entries[0], original.entries[0]);
+    assert_eq!(inserted.entries[1].track, listened_next);
+    assert_eq!(inserted.entries[2], original.entries[1]);
+    let advanced = wait_for_queue(&server, |state| {
+        state.current_entry_id == Some(inserted.entries[1].id)
+    });
+    assert_eq!(
+        advanced.playback.track,
+        Some(inserted.entries[1].track.clone())
+    );
     server.shutdown().unwrap();
 }
 

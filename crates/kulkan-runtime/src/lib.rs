@@ -17,11 +17,11 @@ use kulkan_ipc::{
 pub use kulkan_ipc::{
     PlayCountUpdate, PlaybackSnapshot, PlaybackStatus, QueueEntry, QueueSnapshot, RepeatMode,
 };
-pub use kulkan_library::SearchCriteria;
 use kulkan_library::{
     BrowsePage, BrowseSelection, BrowseView, Catalog, CatalogPage, LibraryState, ScanSummary,
     browse_catalog, scan_library_selected, search_catalog,
 };
+pub use kulkan_library::{ListPlaybackBehavior, SearchCriteria};
 use serde::{Deserialize, Serialize};
 
 mod playback;
@@ -142,6 +142,7 @@ struct LibraryService {
     catalog: Catalog,
     played_threshold_percent: u8,
     startup_view: BrowseView,
+    list_playback_behavior: ListPlaybackBehavior,
     custom_css: Option<String>,
     state_path: Option<PathBuf>,
 }
@@ -155,6 +156,8 @@ struct PersistedLibraryState {
     played_threshold_percent: u8,
     #[serde(default)]
     startup_view: BrowseView,
+    #[serde(default)]
+    list_playback_behavior: ListPlaybackBehavior,
     #[serde(default)]
     custom_css: Option<String>,
 }
@@ -171,6 +174,7 @@ impl LibraryService {
                 catalog: Catalog::default(),
                 played_threshold_percent: DEFAULT_PLAYED_THRESHOLD_PERCENT,
                 startup_view: BrowseView::default(),
+                list_playback_behavior: ListPlaybackBehavior::default(),
                 custom_css: None,
                 state_path: None,
             });
@@ -208,6 +212,7 @@ impl LibraryService {
                     catalog: state.catalog,
                     played_threshold_percent: state.played_threshold_percent,
                     startup_view: state.startup_view,
+                    list_playback_behavior: state.list_playback_behavior,
                     custom_css: state.custom_css,
                     state_path: Some(state_path.to_path_buf()),
                 })
@@ -217,6 +222,7 @@ impl LibraryService {
                 catalog: Catalog::default(),
                 played_threshold_percent: DEFAULT_PLAYED_THRESHOLD_PERCENT,
                 startup_view: BrowseView::default(),
+                list_playback_behavior: ListPlaybackBehavior::default(),
                 custom_css: None,
                 state_path: Some(state_path.to_path_buf()),
             }),
@@ -240,6 +246,7 @@ impl LibraryService {
             catalog: self.catalog.clone(),
             played_threshold_percent: self.played_threshold_percent,
             startup_view: self.startup_view,
+            list_playback_behavior: self.list_playback_behavior,
             custom_css: self.custom_css.clone(),
         })
         .map_err(|error| io::Error::other(format!("could not encode library state: {error}")))?;
@@ -268,6 +275,7 @@ impl LibraryService {
             catalog: self.catalog.clone(),
             played_threshold_percent: self.played_threshold_percent,
             startup_view: self.startup_view,
+            list_playback_behavior: self.list_playback_behavior,
             custom_css: self.custom_css.clone(),
         }
     }
@@ -297,12 +305,14 @@ impl LibraryService {
         self.catalog = state.catalog;
         self.played_threshold_percent = state.played_threshold_percent;
         self.startup_view = state.startup_view;
+        self.list_playback_behavior = state.list_playback_behavior;
         self.custom_css = state.custom_css;
         if let Err(error) = self.persist() {
             self.selected_roots = old_state.selected_roots;
             self.catalog = old_state.catalog;
             self.played_threshold_percent = old_state.played_threshold_percent;
             self.startup_view = old_state.startup_view;
+            self.list_playback_behavior = old_state.list_playback_behavior;
             self.custom_css = old_state.custom_css;
             return Err(error);
         }
@@ -315,12 +325,14 @@ impl LibraryService {
         self.catalog = Catalog::default();
         self.played_threshold_percent = DEFAULT_PLAYED_THRESHOLD_PERCENT;
         self.startup_view = BrowseView::default();
+        self.list_playback_behavior = ListPlaybackBehavior::default();
         self.custom_css = None;
         if let Err(error) = self.persist() {
             self.selected_roots = old_state.selected_roots;
             self.catalog = old_state.catalog;
             self.played_threshold_percent = old_state.played_threshold_percent;
             self.startup_view = old_state.startup_view;
+            self.list_playback_behavior = old_state.list_playback_behavior;
             self.custom_css = old_state.custom_css;
             return Err(error);
         }
@@ -364,6 +376,15 @@ impl LibraryService {
                 self.startup_view = view;
                 if let Err(error) = self.persist() {
                     self.startup_view = previous;
+                    return Message::LibraryOperationFailed(error.to_string());
+                }
+                self.state_message()
+            }
+            Message::SetListPlaybackBehavior(behavior) => {
+                let previous = self.list_playback_behavior;
+                self.list_playback_behavior = behavior;
+                if let Err(error) = self.persist() {
+                    self.list_playback_behavior = previous;
                     return Message::LibraryOperationFailed(error.to_string());
                 }
                 self.state_message()
@@ -515,6 +536,7 @@ impl LibraryService {
             selected_roots: self.selected_roots.clone(),
             catalog_entries: self.catalog.entries.len(),
             startup_view: self.startup_view,
+            list_playback_behavior: self.list_playback_behavior,
         }
     }
 
@@ -955,6 +977,13 @@ impl ServerProcess {
         self.client().set_startup_view(view)
     }
 
+    pub fn set_list_playback_behavior(
+        &self,
+        behavior: ListPlaybackBehavior,
+    ) -> io::Result<LibraryState> {
+        self.client().set_list_playback_behavior(behavior)
+    }
+
     pub fn custom_css(&self) -> io::Result<Option<String>> {
         self.client().custom_css()
     }
@@ -998,6 +1027,18 @@ impl ServerProcess {
 
     pub fn append_to_queue(&self, tracks: &[PathBuf]) -> io::Result<QueueSnapshot> {
         self.client().append_to_queue(tracks)
+    }
+
+    pub fn replace_queue_and_play(&self, tracks: &[PathBuf]) -> io::Result<QueueSnapshot> {
+        self.client().replace_queue_and_play(tracks)
+    }
+
+    pub fn replace_first_queue_entry_and_play(&self, track: &Path) -> io::Result<QueueSnapshot> {
+        self.client().replace_first_queue_entry_and_play(track)
+    }
+
+    pub fn listen_next(&self, track: &Path) -> io::Result<QueueSnapshot> {
+        self.client().listen_next(track)
     }
 
     pub fn queue_state(&self) -> io::Result<QueueSnapshot> {
@@ -1095,6 +1136,13 @@ impl ServerClient {
 
     pub fn set_startup_view(&self, view: BrowseView) -> io::Result<LibraryState> {
         expect_library_state(self.request(Message::SetStartupView(view))?)
+    }
+
+    pub fn set_list_playback_behavior(
+        &self,
+        behavior: ListPlaybackBehavior,
+    ) -> io::Result<LibraryState> {
+        expect_library_state(self.request(Message::SetListPlaybackBehavior(behavior))?)
     }
 
     pub fn custom_css(&self) -> io::Result<Option<String>> {
@@ -1227,6 +1275,18 @@ impl ServerClient {
 
     pub fn append_to_queue(&self, tracks: &[PathBuf]) -> io::Result<QueueSnapshot> {
         expect_queue_state(self.request(Message::AppendQueue(tracks.to_vec()))?)
+    }
+
+    pub fn replace_queue_and_play(&self, tracks: &[PathBuf]) -> io::Result<QueueSnapshot> {
+        expect_queue_state(self.request(Message::ReplaceQueue(tracks.to_vec()))?)
+    }
+
+    pub fn replace_first_queue_entry_and_play(&self, track: &Path) -> io::Result<QueueSnapshot> {
+        expect_queue_state(self.request(Message::ReplaceFirstQueueEntry(track.to_path_buf()))?)
+    }
+
+    pub fn listen_next(&self, track: &Path) -> io::Result<QueueSnapshot> {
+        expect_queue_state(self.request(Message::ListenNextQueueEntry(track.to_path_buf()))?)
     }
 
     pub fn queue_state(&self) -> io::Result<QueueSnapshot> {

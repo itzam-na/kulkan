@@ -17,7 +17,8 @@ use gtk::glib;
 use gtk::prelude::*;
 use kulkan_library::{
     BrowseItem, BrowseSelection, BrowseView, CatalogPage, LibraryEntry, LibraryState,
-    NumericFilter, ScanSummary, SearchCriteria, TextFilter, present_catalog_entry,
+    ListPlaybackBehavior, NumericFilter, ScanSummary, SearchCriteria, TextFilter,
+    present_catalog_entry,
 };
 use kulkan_runtime::{
     ClientInstance, MAX_CUSTOM_CSS_BYTES, PlayCountUpdate, PlaybackSnapshot, PlaybackStatus,
@@ -470,6 +471,27 @@ fn build_main_window(application: &gtk::Application, server_state: Rc<RefCell<Se
     startup_view.set_sensitive(false);
     startup_view.update_property(&[gtk::accessible::Property::Label("View on startup")]);
     settings_content.append(&startup_view);
+    let list_playback_behavior_label = gtk::Label::new(Some("Playing from the List behaviour"));
+    list_playback_behavior_label.set_halign(gtk::Align::Start);
+    settings_content.append(&list_playback_behavior_label);
+    let list_playback_behavior = gtk::DropDown::from_strings(&[
+        "Disabled",
+        "Substitute Queue",
+        "Replace first",
+        "Listen Next",
+        "Add to Queue",
+        "Ask me",
+    ]);
+    list_playback_behavior
+        .set_selected(list_playback_behavior_index(ListPlaybackBehavior::default()));
+    list_playback_behavior.set_sensitive(false);
+    list_playback_behavior.set_tooltip_text(Some(
+        "Choose how activating a track from a Library List interacts with the Queue.",
+    ));
+    list_playback_behavior.update_property(&[gtk::accessible::Property::Label(
+        "Playing from the List behaviour",
+    )]);
+    settings_content.append(&list_playback_behavior);
     let threshold_label = gtk::Label::new(Some("Played threshold (%)"));
     threshold_label.set_halign(gtk::Align::Start);
     settings_content.append(&threshold_label);
@@ -911,6 +933,8 @@ fn build_main_window(application: &gtk::Application, server_state: Rc<RefCell<Se
     let track_selection = Rc::new(RefCell::new(SelectionState::default()));
     let saved_startup_view = Rc::new(Cell::new(BrowseView::Songs));
     let startup_view_syncing = Rc::new(Cell::new(false));
+    let saved_list_playback_behavior = Rc::new(Cell::new(ListPlaybackBehavior::default()));
+    let list_playback_behavior_syncing = Rc::new(Cell::new(false));
     let catalog_actions = CatalogActions {
         server_state: Rc::clone(&server_state),
         sender: sender.clone(),
@@ -1015,6 +1039,9 @@ fn build_main_window(application: &gtk::Application, server_state: Rc<RefCell<Se
             startup_view: startup_view.clone(),
             startup_view_syncing: Rc::clone(&startup_view_syncing),
             saved_startup_view: Rc::clone(&saved_startup_view),
+            list_playback_behavior: list_playback_behavior.clone(),
+            list_playback_behavior_syncing: Rc::clone(&list_playback_behavior_syncing),
+            saved_list_playback_behavior: Rc::clone(&saved_list_playback_behavior),
             played_threshold: played_threshold.clone(),
             syncing_threshold: Rc::clone(&syncing_threshold),
             css_provider: css_provider.clone(),
@@ -1078,6 +1105,40 @@ fn build_main_window(application: &gtk::Application, server_state: Rc<RefCell<Se
                 .map(|state| state.startup_view)
                 .map_err(|error| error.to_string());
             let _ = sender.send(UiEvent::StartupView(result));
+        });
+    });
+
+    let list_behavior_server = Rc::clone(&server_state);
+    let list_behavior_sender = sender.clone();
+    let list_behavior_saved = Rc::clone(&saved_list_playback_behavior);
+    let list_behavior_syncing = Rc::clone(&list_playback_behavior_syncing);
+    let list_behavior_status = settings_status.clone();
+    list_playback_behavior.connect_selected_notify(move |dropdown| {
+        if list_behavior_syncing.get() {
+            return;
+        }
+        let behavior = list_playback_behavior_from_index(dropdown.selected());
+        if behavior == list_behavior_saved.get() {
+            return;
+        }
+        let Some(client) = list_behavior_server.borrow().client() else {
+            set_list_playback_behavior_control(
+                dropdown,
+                &list_behavior_syncing,
+                list_behavior_saved.get(),
+            );
+            list_behavior_status.set_text("Server unavailable. Select Retry.");
+            return;
+        };
+        dropdown.set_sensitive(false);
+        list_behavior_status.set_text("Saving List playback behaviour…");
+        let sender = list_behavior_sender.clone();
+        thread::spawn(move || {
+            let result = client
+                .set_list_playback_behavior(behavior)
+                .map(|state| state.list_playback_behavior)
+                .map_err(|error| error.to_string());
+            let _ = sender.send(UiEvent::ListPlaybackBehavior(result));
         });
     });
 
@@ -1214,6 +1275,19 @@ fn build_main_window(application: &gtk::Application, server_state: Rc<RefCell<Se
         selection_queue_ui.update_actions();
     });
 
+    let activated_queue_model = Rc::clone(&queue_entries);
+    let activated_queue_state = Rc::clone(&server_state);
+    let activated_queue_sender = sender.clone();
+    connect_queue_row_activation(&queue_list, activated_queue_model, move |entry_id| {
+        if let Some(client) = activated_queue_state.borrow().client() {
+            send_playback_operation(
+                client,
+                PlaybackRequest::PlayQueueEntry(entry_id),
+                activated_queue_sender.clone(),
+            );
+        }
+    });
+
     let search_criteria_form = search_form.clone();
     let search_status = status.clone();
     let search_browse = browse_ui.clone();
@@ -1248,7 +1322,14 @@ fn build_main_window(application: &gtk::Application, server_state: Rc<RefCell<Se
     let selection_list = catalog_list.clone();
     let selection_catalog_entries = Rc::clone(&catalog_entries);
     let selection_state_for_click = Rc::clone(&track_selection);
-    selection_click.connect_pressed(move |gesture, _, x, y| {
+    let list_playback_queue = Rc::clone(&queue_entries);
+    let list_playback_behavior_value = Rc::clone(&saved_list_playback_behavior);
+    let list_playback_state = Rc::clone(&server_state);
+    let list_playback_sender = sender.clone();
+    let list_playback_status = status.clone();
+    let list_playback_settings_status = settings_status.clone();
+    let list_playback_parent = window.clone();
+    selection_click.connect_pressed(move |gesture, press_count, x, y| {
         let mut picked_widget = selection_list.pick(x, y, gtk::PickFlags::DEFAULT);
         while let Some(widget) = picked_widget {
             if widget.is::<gtk::Button>() {
@@ -1260,6 +1341,48 @@ fn build_main_window(application: &gtk::Application, server_state: Rc<RefCell<Se
             return;
         };
         if !row.is_selectable() {
+            return;
+        }
+        if press_count >= 2 {
+            let tracks = list_tracks_from_row(&selection_catalog_entries.borrow(), row.index());
+            if tracks.is_empty() {
+                return;
+            }
+            match resolve_list_playback_action(
+                list_playback_behavior_value.get(),
+                !list_playback_queue.borrow().is_empty(),
+            ) {
+                ListPlaybackAction::Ignore => {
+                    list_playback_status.set_text("Playing from the List is disabled in Settings.");
+                }
+                ListPlaybackAction::ConfirmQueueReplacement => {
+                    show_list_playback_dialog(
+                        &list_playback_parent,
+                        tracks,
+                        list_playback_behavior_value.get(),
+                        Rc::clone(&list_playback_state),
+                        list_playback_sender.clone(),
+                        list_playback_status.clone(),
+                        list_playback_settings_status.clone(),
+                    );
+                }
+                ListPlaybackAction::Perform(behavior) => {
+                    if let Some(client) = list_playback_state.borrow().client() {
+                        send_playback_operation(
+                            client,
+                            PlaybackRequest::PlayFromList {
+                                tracks,
+                                selected_index: 0,
+                                behavior,
+                            },
+                            list_playback_sender.clone(),
+                        );
+                    } else {
+                        list_playback_status.set_text("Server unavailable. Select Retry.");
+                    }
+                }
+            }
+            gesture.set_state(gtk::EventSequenceState::Claimed);
             return;
         }
         let modifiers = gesture.current_event_state();
@@ -1570,13 +1693,13 @@ fn build_main_window(application: &gtk::Application, server_state: Rc<RefCell<Se
         let Some(row) = play_queue_list.selected_row() else {
             return;
         };
-        let Some(entry) = play_queue_model.borrow().get(row.index() as usize).cloned() else {
+        let Some(entry_id) = queue_entry_id_at(row.index(), &play_queue_model.borrow()) else {
             return;
         };
         if let Some(client) = play_queue_state.borrow().client() {
             send_playback_operation(
                 client,
-                PlaybackRequest::PlayQueueEntry(entry.id),
+                PlaybackRequest::PlayQueueEntry(entry_id),
                 play_queue_sender.clone(),
             );
         }
@@ -2066,6 +2189,7 @@ enum UiEvent {
     Roots(Result<LibraryState, String>),
     RestoredLibrary(Result<(LibraryState, u8, Option<String>, ServerClient), String>),
     StartupView(Result<BrowseView, String>),
+    ListPlaybackBehavior(Result<ListPlaybackBehavior, String>),
     HistoryCleared(Result<(LibraryState, u8, ServerClient), String>),
     Threshold(Result<u8, String>),
     StateExported(Result<PathBuf, String>),
@@ -2084,6 +2208,11 @@ enum PlaybackRequest {
     Append(Vec<PathBuf>),
     AppendAllMatches(SearchCriteria),
     AppendAllBrowse(BrowseSelection),
+    PlayFromList {
+        tracks: Vec<PathBuf>,
+        selected_index: usize,
+        behavior: ListPlaybackBehavior,
+    },
     PlayQueueEntry(u64),
     Previous,
     Skip,
@@ -2096,6 +2225,29 @@ enum PlaybackRequest {
     Seek(u64),
     Stop,
     State,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ListPlaybackAction {
+    Ignore,
+    ConfirmQueueReplacement,
+    Perform(ListPlaybackBehavior),
+}
+
+fn resolve_list_playback_action(
+    behavior: ListPlaybackBehavior,
+    queue_is_nonempty: bool,
+) -> ListPlaybackAction {
+    match (behavior, queue_is_nonempty) {
+        (ListPlaybackBehavior::Disabled, _) => ListPlaybackAction::Ignore,
+        (ListPlaybackBehavior::AskMe, true) | (ListPlaybackBehavior::SubstituteQueue, true) => {
+            ListPlaybackAction::ConfirmQueueReplacement
+        }
+        (ListPlaybackBehavior::AskMe, false) => {
+            ListPlaybackAction::Perform(ListPlaybackBehavior::SubstituteQueue)
+        }
+        (behavior, _) => ListPlaybackAction::Perform(behavior),
+    }
 }
 
 struct LibraryUi {
@@ -2124,6 +2276,9 @@ struct LibraryUi {
     startup_view: gtk::DropDown,
     startup_view_syncing: Rc<Cell<bool>>,
     saved_startup_view: Rc<Cell<BrowseView>>,
+    list_playback_behavior: gtk::DropDown,
+    list_playback_behavior_syncing: Rc<Cell<bool>>,
+    saved_list_playback_behavior: Rc<Cell<ListPlaybackBehavior>>,
     played_threshold: gtk::SpinButton,
     syncing_threshold: Rc<Cell<bool>>,
     css_provider: gtk::CssProvider,
@@ -2419,6 +2574,9 @@ fn install_library_events(receiver: Receiver<UiEvent>, ui: LibraryUi) {
         startup_view,
         startup_view_syncing,
         saved_startup_view,
+        list_playback_behavior,
+        list_playback_behavior_syncing,
+        saved_list_playback_behavior,
         played_threshold,
         syncing_threshold,
         css_provider,
@@ -2459,6 +2617,13 @@ fn install_library_events(receiver: Receiver<UiEvent>, ui: LibraryUi) {
                         state.startup_view,
                     );
                     startup_view.set_sensitive(true);
+                    restore_list_playback_behavior_control(
+                        &list_playback_behavior,
+                        &list_playback_behavior_syncing,
+                        &saved_list_playback_behavior,
+                        state.list_playback_behavior,
+                    );
+                    list_playback_behavior.set_sensitive(true);
                     css_editor.set_editable(true);
                     css_themes.set_sensitive(true);
                     css_apply.set_sensitive(true);
@@ -2506,6 +2671,27 @@ fn install_library_events(receiver: Receiver<UiEvent>, ui: LibraryUi) {
                     startup_view.set_sensitive(actions.server_state.borrow().client().is_some());
                     settings_status.set_text(&format!("Could not save startup view: {error}"));
                 }
+                UiEvent::ListPlaybackBehavior(Ok(behavior)) => {
+                    restore_list_playback_behavior_control(
+                        &list_playback_behavior,
+                        &list_playback_behavior_syncing,
+                        &saved_list_playback_behavior,
+                        behavior,
+                    );
+                    list_playback_behavior.set_sensitive(true);
+                    settings_status.set_text("List playback behaviour saved.");
+                }
+                UiEvent::ListPlaybackBehavior(Err(error)) => {
+                    set_list_playback_behavior_control(
+                        &list_playback_behavior,
+                        &list_playback_behavior_syncing,
+                        saved_list_playback_behavior.get(),
+                    );
+                    list_playback_behavior
+                        .set_sensitive(actions.server_state.borrow().client().is_some());
+                    settings_status
+                        .set_text(&format!("Could not save List playback behaviour: {error}"));
+                }
                 UiEvent::HistoryCleared(result) => match result {
                     Ok((state, threshold, _client)) => {
                         *roots_model.borrow_mut() = state.selected_roots.clone();
@@ -2538,6 +2724,12 @@ fn install_library_events(receiver: Receiver<UiEvent>, ui: LibraryUi) {
                         &startup_view_syncing,
                         &saved_startup_view,
                         state.startup_view,
+                    );
+                    restore_list_playback_behavior_control(
+                        &list_playback_behavior,
+                        &list_playback_behavior_syncing,
+                        &saved_list_playback_behavior,
+                        state.list_playback_behavior,
                     );
                     load_css_into_editor(
                         &css_provider,
@@ -2591,6 +2783,12 @@ fn install_library_events(receiver: Receiver<UiEvent>, ui: LibraryUi) {
                         &startup_view_syncing,
                         &saved_startup_view,
                         state.startup_view,
+                    );
+                    restore_list_playback_behavior_control(
+                        &list_playback_behavior,
+                        &list_playback_behavior_syncing,
+                        &saved_list_playback_behavior,
+                        state.list_playback_behavior,
                     );
                     load_css_into_editor(
                         &css_provider,
@@ -2906,6 +3104,11 @@ fn perform_playback_request(
             }
             client.append_to_queue(&tracks)
         }
+        PlaybackRequest::PlayFromList {
+            tracks,
+            selected_index,
+            behavior,
+        } => perform_list_playback(client, &tracks, selected_index, behavior),
         PlaybackRequest::PlayQueueEntry(entry_id) => client.play_queue_entry(entry_id),
         PlaybackRequest::Previous => client.previous_queue_entry(),
         PlaybackRequest::Skip => client.skip_queue_entry(),
@@ -2955,6 +3158,35 @@ fn perform_playback_request(
             client.queue_state()
         }
         PlaybackRequest::State => client.queue_state(),
+    }
+}
+
+fn perform_list_playback(
+    client: &ServerClient,
+    tracks: &[PathBuf],
+    selected_index: usize,
+    behavior: ListPlaybackBehavior,
+) -> std::io::Result<QueueSnapshot> {
+    let Some(track) = tracks.get(selected_index) else {
+        return client.queue_state();
+    };
+    match behavior {
+        ListPlaybackBehavior::Disabled => client.queue_state(),
+        ListPlaybackBehavior::SubstituteQueue | ListPlaybackBehavior::AskMe => {
+            client.replace_queue_and_play(&tracks[selected_index..])
+        }
+        ListPlaybackBehavior::ReplaceFirst => client.replace_first_queue_entry_and_play(track),
+        ListPlaybackBehavior::ListenNext => client.listen_next(track),
+        ListPlaybackBehavior::AddToQueue => {
+            let before = client.queue_state()?;
+            let after = client.append_to_queue(std::slice::from_ref(track))?;
+            if before.entries.is_empty() && before.current_entry_id.is_none() {
+                if let Some(entry) = after.entries.last() {
+                    return client.play_queue_entry(entry.id);
+                }
+            }
+            Ok(after)
+        }
     }
 }
 
@@ -3231,7 +3463,7 @@ fn replace_queue_rows(
         let label = gtk::Label::new(Some(&format!("{marker}{title}")));
         label.set_halign(gtk::Align::Start);
         label.set_wrap(true);
-        label.set_selectable(true);
+        label.set_selectable(false);
         if entry.failed {
             label.add_css_class("error");
         }
@@ -3239,6 +3471,149 @@ fn replace_queue_rows(
         row.set_child(Some(&label));
         list.append(&row);
     }
+}
+
+fn queue_entry_id_at(row_index: i32, entries: &[QueueEntry]) -> Option<u64> {
+    usize::try_from(row_index)
+        .ok()
+        .and_then(|index| entries.get(index))
+        .map(|entry| entry.id)
+}
+
+fn connect_queue_row_activation(
+    list: &gtk::ListBox,
+    entries: Rc<RefCell<Vec<QueueEntry>>>,
+    activate: impl Fn(u64) + 'static,
+) {
+    list.connect_row_activated(move |_, row| {
+        if let Some(entry_id) = queue_entry_id_at(row.index(), &entries.borrow()) {
+            activate(entry_id);
+        }
+    });
+}
+
+fn list_tracks_from_row(entries: &[LibraryEntry], row_index: i32) -> Vec<PathBuf> {
+    let Ok(row_index) = usize::try_from(row_index) else {
+        return Vec::new();
+    };
+    entries
+        .iter()
+        .skip(row_index)
+        .filter(|entry| entry.active)
+        .map(|entry| entry.path.clone())
+        .collect()
+}
+
+fn show_list_playback_dialog(
+    parent: &impl IsA<gtk::Window>,
+    tracks: Vec<PathBuf>,
+    default_behavior: ListPlaybackBehavior,
+    server_state: Rc<RefCell<ServerState>>,
+    sender: Sender<UiEvent>,
+    status: gtk::Label,
+    settings_status: gtk::Label,
+) {
+    let dialog = gtk::Dialog::builder()
+        .title("Play from the List")
+        .transient_for(parent)
+        .modal(true)
+        .default_width(480)
+        .build();
+    dialog.add_button("Cancel", gtk::ResponseType::Cancel);
+    dialog.add_button("Continue", gtk::ResponseType::Accept);
+
+    let content = dialog.content_area();
+    content.set_spacing(8);
+    content.set_margin_top(16);
+    content.set_margin_bottom(16);
+    content.set_margin_start(16);
+    content.set_margin_end(16);
+    let message = gtk::Label::new(None);
+    message.set_wrap(true);
+    message.set_halign(gtk::Align::Start);
+    content.append(&message);
+    let behavior_label = gtk::Label::new(Some("Playing from the List behaviour"));
+    behavior_label.set_halign(gtk::Align::Start);
+    content.append(&behavior_label);
+    let behavior = gtk::DropDown::from_strings(&[
+        "Disabled",
+        "Substitute Queue",
+        "Replace first",
+        "Listen Next",
+        "Add to Queue",
+        "Ask me",
+    ]);
+    let initial_behavior = if default_behavior == ListPlaybackBehavior::AskMe {
+        ListPlaybackBehavior::SubstituteQueue
+    } else {
+        default_behavior
+    };
+    behavior.set_selected(list_playback_behavior_index(initial_behavior));
+    content.append(&behavior);
+    let remember = gtk::CheckButton::with_label("Remember my decision");
+    content.append(&remember);
+
+    message.set_text(list_playback_behavior_description(initial_behavior));
+    let update_message = message.clone();
+    behavior.connect_selected_notify(move |dropdown| {
+        update_message.set_text(list_playback_behavior_description(
+            list_playback_behavior_from_index(dropdown.selected()),
+        ));
+    });
+
+    let dialog_state = Rc::clone(&server_state);
+    let dialog_sender = sender.clone();
+    let dialog_status = status.clone();
+    let dialog_settings_status = settings_status.clone();
+    dialog.connect_response(move |dialog, response| {
+        if response == gtk::ResponseType::Accept {
+            let selected_behavior = list_playback_behavior_from_index(behavior.selected());
+            let operation_behavior = if selected_behavior == ListPlaybackBehavior::AskMe {
+                ListPlaybackBehavior::SubstituteQueue
+            } else {
+                selected_behavior
+            };
+            let Some(client) = dialog_state.borrow().client() else {
+                dialog_status.set_text("Server unavailable. Select Retry.");
+                dialog.close();
+                return;
+            };
+            if remember.is_active() {
+                send_list_playback_behavior(
+                    client.clone(),
+                    selected_behavior,
+                    dialog_sender.clone(),
+                );
+                dialog_settings_status.set_text("Saving List playback behaviour…");
+            }
+            send_playback_operation(
+                client,
+                PlaybackRequest::PlayFromList {
+                    tracks: tracks.clone(),
+                    selected_index: 0,
+                    behavior: operation_behavior,
+                },
+                dialog_sender.clone(),
+            );
+            dialog_status.set_text("Starting playback from the List…");
+        }
+        dialog.close();
+    });
+    dialog.present();
+}
+
+fn send_list_playback_behavior(
+    client: ServerClient,
+    behavior: ListPlaybackBehavior,
+    sender: Sender<UiEvent>,
+) {
+    thread::spawn(move || {
+        let result = client
+            .set_list_playback_behavior(behavior)
+            .map(|state| state.list_playback_behavior)
+            .map_err(|error| error.to_string());
+        let _ = sender.send(UiEvent::ListPlaybackBehavior(result));
+    });
 }
 
 fn format_time(milliseconds: u64) -> String {
@@ -4112,6 +4487,67 @@ fn restore_startup_view_control(
     set_startup_view_control(dropdown, syncing, view);
 }
 
+fn list_playback_behavior_from_index(index: u32) -> ListPlaybackBehavior {
+    match index {
+        0 => ListPlaybackBehavior::Disabled,
+        1 => ListPlaybackBehavior::SubstituteQueue,
+        2 => ListPlaybackBehavior::ReplaceFirst,
+        3 => ListPlaybackBehavior::ListenNext,
+        4 => ListPlaybackBehavior::AddToQueue,
+        _ => ListPlaybackBehavior::AskMe,
+    }
+}
+
+fn list_playback_behavior_index(behavior: ListPlaybackBehavior) -> u32 {
+    match behavior {
+        ListPlaybackBehavior::Disabled => 0,
+        ListPlaybackBehavior::SubstituteQueue => 1,
+        ListPlaybackBehavior::ReplaceFirst => 2,
+        ListPlaybackBehavior::ListenNext => 3,
+        ListPlaybackBehavior::AddToQueue => 4,
+        ListPlaybackBehavior::AskMe => 5,
+    }
+}
+
+fn list_playback_behavior_description(behavior: ListPlaybackBehavior) -> &'static str {
+    match behavior {
+        ListPlaybackBehavior::Disabled => "Playing from the List will be disabled.",
+        ListPlaybackBehavior::SubstituteQueue => {
+            "The current Queue will be erased and replaced with this List, starting at the selected track."
+        }
+        ListPlaybackBehavior::ReplaceFirst => {
+            "The first Queue entry will be replaced by the selected track."
+        }
+        ListPlaybackBehavior::ListenNext => "The selected track will play after the current track.",
+        ListPlaybackBehavior::AddToQueue => {
+            "The selected track will be added to the end of the Queue."
+        }
+        ListPlaybackBehavior::AskMe => {
+            "You will be asked again the next time you play from a List."
+        }
+    }
+}
+
+fn set_list_playback_behavior_control(
+    dropdown: &gtk::DropDown,
+    syncing: &Rc<Cell<bool>>,
+    behavior: ListPlaybackBehavior,
+) {
+    syncing.set(true);
+    dropdown.set_selected(list_playback_behavior_index(behavior));
+    syncing.set(false);
+}
+
+fn restore_list_playback_behavior_control(
+    dropdown: &gtk::DropDown,
+    syncing: &Rc<Cell<bool>>,
+    saved_behavior: &Rc<Cell<ListPlaybackBehavior>>,
+    behavior: ListPlaybackBehavior,
+) {
+    saved_behavior.set(behavior);
+    set_list_playback_behavior_control(dropdown, syncing, behavior);
+}
+
 fn set_server_controls_sensitive(
     add_root: &gtk::Button,
     remove_root: &gtk::Button,
@@ -4129,7 +4565,11 @@ fn set_server_controls_sensitive(
 
 #[cfg(test)]
 mod appearance_tests {
-    use super::{APPLICATION_CSS, theme_css, theme_index};
+    use super::{
+        APPLICATION_CSS, ListPlaybackAction, ListPlaybackBehavior,
+        list_playback_behavior_from_index, list_playback_behavior_index,
+        resolve_list_playback_action, theme_css, theme_index,
+    };
 
     #[test]
     fn built_in_theme_css_round_trips_to_its_preset() {
@@ -4145,5 +4585,113 @@ mod appearance_tests {
             assert!(css.starts_with(APPLICATION_CSS));
             assert!(css.contains(accent));
         }
+    }
+
+    #[test]
+    fn list_playback_behavior_options_round_trip_in_settings_order() {
+        for (index, behavior) in [
+            ListPlaybackBehavior::Disabled,
+            ListPlaybackBehavior::SubstituteQueue,
+            ListPlaybackBehavior::ReplaceFirst,
+            ListPlaybackBehavior::ListenNext,
+            ListPlaybackBehavior::AddToQueue,
+            ListPlaybackBehavior::AskMe,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            assert_eq!(list_playback_behavior_index(behavior), index as u32);
+            assert_eq!(list_playback_behavior_from_index(index as u32), behavior);
+        }
+    }
+
+    #[test]
+    fn list_playback_behavior_confirms_destructive_queue_substitution() {
+        assert_eq!(
+            resolve_list_playback_action(ListPlaybackBehavior::AskMe, true),
+            ListPlaybackAction::ConfirmQueueReplacement
+        );
+        assert_eq!(
+            resolve_list_playback_action(ListPlaybackBehavior::SubstituteQueue, true),
+            ListPlaybackAction::ConfirmQueueReplacement
+        );
+        assert_eq!(
+            resolve_list_playback_action(ListPlaybackBehavior::AskMe, false),
+            ListPlaybackAction::Perform(ListPlaybackBehavior::SubstituteQueue)
+        );
+        assert_eq!(
+            resolve_list_playback_action(ListPlaybackBehavior::ListenNext, true),
+            ListPlaybackAction::Perform(ListPlaybackBehavior::ListenNext)
+        );
+        assert_eq!(
+            resolve_list_playback_action(ListPlaybackBehavior::Disabled, false),
+            ListPlaybackAction::Ignore
+        );
+    }
+}
+
+#[cfg(test)]
+mod queue_ui_tests {
+    use gtk::prelude::*;
+
+    use super::{QueueEntry, connect_queue_row_activation, queue_entry_id_at, replace_queue_rows};
+
+    #[test]
+    fn queue_rows_do_not_select_their_text() {
+        if gtk::init().is_err() {
+            eprintln!("skipping GTK row test because no display is available");
+            return;
+        }
+
+        let list = gtk::ListBox::new();
+        replace_queue_rows(
+            &list,
+            &[QueueEntry {
+                id: 1,
+                track: "test-track.flac".into(),
+                failed: false,
+            }],
+            None,
+            &[],
+        );
+
+        let row = list.row_at_index(0).expect("queue row should be rendered");
+        let label = row
+            .child()
+            .and_downcast::<gtk::Label>()
+            .expect("queue row should contain a label");
+        assert!(
+            !label.is_selectable(),
+            "queue entry labels should not select text on double-click"
+        );
+
+        let entries = vec![
+            QueueEntry {
+                id: 10,
+                track: "same-track.flac".into(),
+                failed: false,
+            },
+            QueueEntry {
+                id: 11,
+                track: "same-track.flac".into(),
+                failed: false,
+            },
+        ];
+        assert_eq!(queue_entry_id_at(1, &entries), Some(11));
+        assert_eq!(queue_entry_id_at(-1, &entries), None);
+
+        let list = gtk::ListBox::new();
+        replace_queue_rows(&list, &entries, None, &[]);
+        let activated = std::rc::Rc::new(std::cell::Cell::new(None));
+        let activated_from_signal = std::rc::Rc::clone(&activated);
+        connect_queue_row_activation(
+            &list,
+            std::rc::Rc::new(std::cell::RefCell::new(entries)),
+            move |entry_id| activated_from_signal.set(Some(entry_id)),
+        );
+
+        let row = list.row_at_index(1).expect("second queue row should exist");
+        list.emit_by_name::<()>("row-activated", &[&row]);
+        assert_eq!(activated.get(), Some(11));
     }
 }

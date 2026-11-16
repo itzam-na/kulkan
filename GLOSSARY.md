@@ -29,6 +29,9 @@ A file-backed item in the local catalog, one per resolved file path. Identical a
 A filesystem folder selected as a source for explicitly scanning entries into the Library.
 _Avoid_: Library root
 
+**List playback behavior**:
+The preference defining what happens when a track in a Library List is double-clicked.
+
 **No Album**:
 A placeholder grouping for tracks with no album release identity; it is not itself an album.
 
